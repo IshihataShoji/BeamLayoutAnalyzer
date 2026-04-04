@@ -1,0 +1,232 @@
+<Window
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    x:Class="BeamLayoutAnalyzer.UI.FramingPlanWindow"
+    Title="梁伏図解析ビューア"
+    Height="780" Width="1100"
+    MinHeight="520" MinWidth="740"
+    WindowStartupLocation="CenterScreen"
+    Background="#2D2D2D">
+
+    <Window.Resources>
+        <!-- 共通テキスト -->
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#E0E0E0"/>
+            <Setter Property="FontFamily" Value="Meiryo UI, Yu Gothic UI, Segoe UI"/>
+            <Setter Property="FontSize"   Value="12"/>
+        </Style>
+        <!-- テキストボックス -->
+        <Style TargetType="TextBox">
+            <Setter Property="Background"      Value="#3C3C3C"/>
+            <Setter Property="Foreground"      Value="#E0E0E0"/>
+            <Setter Property="BorderBrush"     Value="#555"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding"         Value="5,3"/>
+            <Setter Property="FontFamily"      Value="Meiryo UI, Yu Gothic UI, Segoe UI"/>
+        </Style>
+        <!-- ボタン -->
+        <Style TargetType="Button">
+            <Setter Property="Background"      Value="#0078D4"/>
+            <Setter Property="Foreground"      Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding"         Value="0,7"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="FontFamily"      Value="Meiryo UI, Yu Gothic UI, Segoe UI"/>
+        </Style>
+        <!-- セパレータ -->
+        <Style TargetType="Separator">
+            <Setter Property="Background" Value="#444"/>
+            <Setter Property="Margin"     Value="0,6,0,6"/>
+        </Style>
+
+        <!-- タブ風ラジオボタン -->
+        <Style x:Key="TabRadio" TargetType="RadioButton">
+            <Setter Property="Foreground"      Value="#888888"/>
+            <Setter Property="FontFamily"      Value="Meiryo UI, Yu Gothic UI, Segoe UI"/>
+            <Setter Property="FontSize"        Value="12"/>
+            <Setter Property="Cursor"          Value="Hand"/>
+            <Setter Property="Margin"          Value="0,0,2,0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="Bd"
+                                Background="Transparent"
+                                BorderThickness="0,0,0,3"
+                                BorderBrush="Transparent"
+                                Padding="16,8,16,8">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#0078D4"/>
+                                <Setter Property="Foreground" Value="White"/>
+                                <Setter TargetName="Bd" Property="Background" Value="#1A2A3A"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#252535"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="265"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- 左：タブ + キャンバス -->
+        <Grid Grid.Column="0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- タブバー -->
+            <Border Grid.Row="0" Background="#151520" Padding="6,4,0,0">
+                <StackPanel Orientation="Horizontal">
+                    <RadioButton x:Name="RbSeismic"
+                                 Content="地震力"
+                                 GroupName="ViewMode"
+                                 Style="{StaticResource TabRadio}"
+                                 Checked="ViewMode_Changed"/>
+                    <RadioButton x:Name="RbBeams"
+                                 Content="大梁・小梁"
+                                 GroupName="ViewMode"
+                                 IsChecked="True"
+                                 Style="{StaticResource TabRadio}"
+                                 Checked="ViewMode_Changed"/>
+                    <RadioButton x:Name="RbColumns"
+                                 Content="柱"
+                                 GroupName="ViewMode"
+                                 Style="{StaticResource TabRadio}"
+                                 Checked="ViewMode_Changed"/>
+                </StackPanel>
+            </Border>
+
+            <!-- 描画エリア -->
+            <Border Grid.Row="1" Background="#12121E">
+                <ScrollViewer x:Name="DrawingScroller"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Auto">
+                    <Canvas x:Name="DrawingCanvas" Background="Transparent"/>
+                </ScrollViewer>
+            </Border>
+        </Grid>
+
+        <!-- 右パネル -->
+        <Border Grid.Column="1" Background="#252526">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="12,12,12,12">
+
+                    <TextBlock Text="梁伏図解析ビューア"
+                               FontSize="14" FontWeight="Bold" Margin="0,0,0,2"/>
+                    <TextBlock Text="部材をクリックして情報を確認"
+                               FontSize="11" Foreground="#888" Margin="0,0,0,8"/>
+
+                    <Separator/>
+
+                    <!-- 積載荷重定数 -->
+                    <TextBlock Text="積載荷重 定数設定"
+                               FontWeight="SemiBold" Margin="0,0,0,8"/>
+
+                    <TextBlock Text="地震力用" FontSize="11" Foreground="#CCC"/>
+                    <Grid Margin="0,2,0,5">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="SeismicConstBox" Text="0.30"/>
+                        <TextBlock Grid.Column="1" Text=" kN/m²"
+                                   VerticalAlignment="Center" Foreground="#AAA" FontSize="11"/>
+                    </Grid>
+
+                    <TextBlock Text="大梁用" FontSize="11" Foreground="#CCC"/>
+                    <Grid Margin="0,2,0,5">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="MainBeamConstBox" Text="0.65"/>
+                        <TextBlock Grid.Column="1" Text=" kN/m²"
+                                   VerticalAlignment="Center" Foreground="#AAA" FontSize="11"/>
+                    </Grid>
+
+                    <TextBlock Text="小梁用" FontSize="11" Foreground="#CCC"/>
+                    <Grid Margin="0,2,0,5">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="SubBeamConstBox" Text="0.90"/>
+                        <TextBlock Grid.Column="1" Text=" kN/m²"
+                                   VerticalAlignment="Center" Foreground="#AAA" FontSize="11"/>
+                    </Grid>
+
+                    <TextBlock Text="柱用" FontSize="11" Foreground="#CCC"/>
+                    <Grid Margin="0,2,0,5">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox x:Name="ColumnConstBox" Text="0.65"/>
+                        <TextBlock Grid.Column="1" Text=" kN/m²"
+                                   VerticalAlignment="Center" Foreground="#AAA" FontSize="11"/>
+                    </Grid>
+
+                    <Button Content="再計算・更新"
+                            Click="RecalcButton_Click"
+                            HorizontalAlignment="Stretch"
+                            Margin="0,2,0,0"/>
+
+                    <Separator/>
+
+                    <!-- 選択部材情報 -->
+                    <TextBlock Text="選択部材の情報"
+                               FontWeight="SemiBold" Margin="0,0,0,6"/>
+                    <Border Background="#1E1E2E" CornerRadius="4" Padding="9,7">
+                        <StackPanel x:Name="MemberInfoPanel">
+                            <TextBlock Text="部材をクリックしてください"
+                                       Foreground="#666" FontSize="11" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Separator/>
+
+                    <!-- 集計 -->
+                    <TextBlock Text="集計" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                    <Border Background="#1E1E2E" CornerRadius="4" Padding="9,7">
+                        <StackPanel x:Name="SummaryPanel"/>
+                    </Border>
+
+                    <Separator/>
+
+                    <!-- 凡例 -->
+                    <TextBlock Text="凡例" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                        <Rectangle Width="20" Height="3" Fill="#FFD700" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="大梁" FontSize="11" Foreground="#AAA"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                        <Rectangle Width="20" Height="3" Fill="#FFB43C" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="小梁" FontSize="11" Foreground="#AAA"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                        <Ellipse Width="11" Height="11" Fill="#3CB4FF" Margin="4,0,9,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="柱" FontSize="11" Foreground="#AAA"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                        <Rectangle Width="20" Height="8" Fill="#28326450" Stroke="#3264C8"
+                                   StrokeThickness="1" StrokeDashArray="3,2"
+                                   Margin="0,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="ボロノイ領域（柱タブ）" FontSize="10" Foreground="#AAA"/>
+                    </StackPanel>
+
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+    </Grid>
+</Window>
