@@ -145,6 +145,8 @@ public class TributaryAreaCalculator
             double sa = SignedArea(poly);
             if (sa > 1e-4) // CCW = 有限面（内部）
             {
+                // スラブ境界そのもの（全体）は除外
+                if (sa > slab.Area * 0.9) continue;
                 var ctr = new Point2d(poly.Average(p => p.X), poly.Average(p => p.Y));
                 if (slab.Contains(ctr))
                     faces.Add(poly);
