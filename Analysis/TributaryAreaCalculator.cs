@@ -56,9 +56,30 @@ public class TributaryAreaCalculator
         var sv = slab.Vertices;
         for (int i = 0; i < sv.Count; i++)
             segs.Add((sv[i], sv[(i + 1) % sv.Count]));
-        foreach (var b in _beams)
-            if (slab.Contains(b.MidPoint) || slab.Contains(b.StartPoint) || slab.Contains(b.EndPoint))
-                segs.Add((b.StartPoint, b.EndPoint));
+        var beamsInSlab = _beams.Where(b =>
+            slab.Contains(b.MidPoint) || slab.Contains(b.StartPoint) || slab.Contains(b.EndPoint)).ToList();
+        foreach (var b in beamsInSlab)
+            segs.Add((b.StartPoint, b.EndPoint));
+
+        // 梁の端点からスラブ境界への延長線を追加（マージン領域を面として検出するため）
+        foreach (var b in beamsInSlab)
+        {
+            var dir = b.Direction;
+            // 始点側を延長（梁の逆方向）
+            if (!IsOnSlabBoundary(slab, b.StartPoint))
+            {
+                var ext = RaySlabIntersect(slab, b.StartPoint, new Vector2d(-dir.X, -dir.Y));
+                if (ext.HasValue && Dist(ext.Value, b.StartPoint) > 0.01)
+                    segs.Add((ext.Value, b.StartPoint));
+            }
+            // 終点側を延長（梁の方向）
+            if (!IsOnSlabBoundary(slab, b.EndPoint))
+            {
+                var ext = RaySlabIntersect(slab, b.EndPoint, dir);
+                if (ext.HasValue && Dist(ext.Value, b.EndPoint) > 0.01)
+                    segs.Add((b.EndPoint, ext.Value));
+            }
+        }
 
         // 2. 全線分の交点を求め、交点で線分を分割
         var pts = new List<Point2d>();
@@ -385,6 +406,36 @@ public class TributaryAreaCalculator
       if (l2 < 1e-20) return Dist(p, a);
       double t = Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / l2, 0, 1);
       return Dist(p, new Point2d(a.X + t * dx, a.Y + t * dy)); }
+
+    /// <summary>点がスラブ境界上にあるか判定（50mm許容）</summary>
+    private static bool IsOnSlabBoundary(SlabModel slab, Point2d pt)
+    {
+        var sv = slab.Vertices;
+        for (int i = 0; i < sv.Count; i++)
+            if (PtSegDist(pt, sv[i], sv[(i + 1) % sv.Count]) < 0.05) return true;
+        return false;
+    }
+
+    /// <summary>点からdir方向へレイを飛ばし、スラブ境界との最初の交点を返す</summary>
+    private static Point2d? RaySlabIntersect(SlabModel slab, Point2d origin, Vector2d dir)
+    {
+        var sv = slab.Vertices;
+        Point2d? closest = null; double closestD = double.MaxValue;
+        for (int i = 0; i < sv.Count; i++)
+        {
+            int j = (i + 1) % sv.Count;
+            double d2x = sv[j].X - sv[i].X, d2y = sv[j].Y - sv[i].Y;
+            double den = dir.X * d2y - dir.Y * d2x;
+            if (Math.Abs(den) < 1e-10) continue;
+            double dx = sv[i].X - origin.X, dy = sv[i].Y - origin.Y;
+            double t = (dx * d2y - dy * d2x) / den;
+            double s = (dx * dir.Y - dy * dir.X) / den;
+            if (t < 1e-6 || s < -1e-8 || s > 1 + 1e-8) continue;
+            double d = t;
+            if (d < closestD) { closestD = d; closest = new Point2d(origin.X + t * dir.X, origin.Y + t * dir.Y); }
+        }
+        return closest;
+    }
 
     // ════════════════════════════════════════════════════════
     //  柱（ボロノイ）
