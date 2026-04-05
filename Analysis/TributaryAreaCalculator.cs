@@ -61,25 +61,6 @@ public class TributaryAreaCalculator
         foreach (var b in beamsInSlab)
             segs.Add((b.StartPoint, b.EndPoint));
 
-        // 梁の端点からスラブ境界への延長線を追加（マージン領域を面として検出するため）
-        foreach (var b in beamsInSlab)
-        {
-            var dir = b.Direction;
-            // 始点側を延長（梁の逆方向）
-            if (!IsOnSlabBoundary(slab, b.StartPoint))
-            {
-                var ext = RaySlabIntersect(slab, b.StartPoint, new Vector2d(-dir.X, -dir.Y));
-                if (ext.HasValue && Dist(ext.Value, b.StartPoint) > 0.01)
-                    segs.Add((ext.Value, b.StartPoint));
-            }
-            // 終点側を延長（梁の方向）
-            if (!IsOnSlabBoundary(slab, b.EndPoint))
-            {
-                var ext = RaySlabIntersect(slab, b.EndPoint, dir);
-                if (ext.HasValue && Dist(ext.Value, b.EndPoint) > 0.01)
-                    segs.Add((b.EndPoint, ext.Value));
-            }
-        }
 
         // 2. 全線分の交点を求め、交点で線分を分割
         var pts = new List<Point2d>();
