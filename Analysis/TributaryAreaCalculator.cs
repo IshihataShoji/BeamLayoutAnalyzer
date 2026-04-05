@@ -458,11 +458,17 @@ public class TributaryAreaCalculator
         bool hasBeamLeft  = HasBeamOnEdge(tl, bl, beamsInSlab, slab);
         bool hasBeamRight = HasBeamOnEdge(tr, br, beamsInSlab, slab);
 
-        // 角で二等分線を引くか = その角の両隣の辺が両方とも梁を持つ
-        bool tlBis = hasBeamTop  && hasBeamLeft;
-        bool trBis = hasBeamTop  && hasBeamRight;
-        bool blBis = hasBeamBot  && hasBeamLeft;
-        bool brBis = hasBeamBot  && hasBeamRight;
+        // 角がスラブ境界上にあるか
+        bool tlOnBound = IsOnSlabBoundary(slab, tl);
+        bool trOnBound = IsOnSlabBoundary(slab, tr);
+        bool blOnBound = IsOnSlabBoundary(slab, bl);
+        bool brOnBound = IsOnSlabBoundary(slab, br);
+
+        // 角で二等分線を引くか = 両隣の辺が梁 AND 角がスラブ境界上でない
+        bool tlBis = hasBeamTop  && hasBeamLeft  && !tlOnBound;
+        bool trBis = hasBeamTop  && hasBeamRight && !trOnBound;
+        bool blBis = hasBeamBot  && hasBeamLeft  && !blOnBound;
+        bool brBis = hasBeamBot  && hasBeamRight && !brOnBound;
 
         var junctionCorners = new List<(Point2d pt, double bisAng)>();
         if (tlBis) junctionCorners.Add((tl, BisAngle(tl, tr, bl)));
@@ -578,10 +584,15 @@ public class TributaryAreaCalculator
         bool e12 = HasBeamOnEdge(p1, p2, beamsInSlab, slab);
         bool e20 = HasBeamOnEdge(p2, p0, beamsInSlab, slab);
 
-        // 角で二等分線を引くか = 両隣の辺が梁を持つ
-        bool bis0 = e01 && e20;
-        bool bis1 = e01 && e12;
-        bool bis2 = e12 && e20;
+        // 角がスラブ境界上にあるか
+        bool b0 = IsOnSlabBoundary(slab, p0);
+        bool b1 = IsOnSlabBoundary(slab, p1);
+        bool b2 = IsOnSlabBoundary(slab, p2);
+
+        // 角で二等分線を引くか = 両隣の辺が梁 AND 角がスラブ境界上でない
+        bool bis0 = e01 && e20 && !b0;
+        bool bis1 = e01 && e12 && !b1;
+        bool bis2 = e12 && e20 && !b2;
 
         var junctions = new List<(Point2d pt, double bisAng)>();
         if (bis0) junctions.Add((p0, BisAngle(p0, p1, p2)));
@@ -806,12 +817,12 @@ public class TributaryAreaCalculator
       double t = Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / l2, 0, 1);
       return Dist(p, new Point2d(a.X + t * dx, a.Y + t * dy)); }
 
-    /// <summary>点がスラブ境界上にあるか判定（50mm許容）</summary>
+    /// <summary>点がスラブ境界上にあるか判定（200mm許容）</summary>
     private static bool IsOnSlabBoundary(SlabModel slab, Point2d pt)
     {
         var sv = slab.Vertices;
         for (int i = 0; i < sv.Count; i++)
-            if (PtSegDist(pt, sv[i], sv[(i + 1) % sv.Count]) < 0.05) return true;
+            if (PtSegDist(pt, sv[i], sv[(i + 1) % sv.Count]) < 0.20) return true;
         return false;
     }
 
