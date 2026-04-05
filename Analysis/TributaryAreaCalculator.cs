@@ -409,9 +409,26 @@ public class TributaryAreaCalculator
     // ─── 四角形の亀甲分割（LISP準拠）──────────────────────
 
     /// <summary>パネル角が梁/柱のジャンクションか判定（接続されていれば二等分線を引く）</summary>
-    private bool IsCornerAtBeamJunction(Point2d pt, List<BeamModel> beamsInSlab, double tol = 0.15)
+    private bool IsCornerAtBeamJunction(Point2d pt, List<BeamModel> beamsInSlab, SlabModel slab, double tol = 0.15)
     {
-        // この角に接触している梁の数をカウント
+        // スラブ境界上にある角は基本的に二等分線を引かない
+        bool onSlabBoundary = false;
+        var sv = slab.Vertices;
+        for (int i = 0; i < sv.Count; i++)
+        {
+            if (PtSegDist(pt, sv[i], sv[(i + 1) % sv.Count]) < tol)
+            { onSlabBoundary = true; break; }
+        }
+
+        // 柱に近いか
+        bool nearColumn = _columns.Any(c =>
+            Dist(pt, new Point2d(c.Center.X, c.Center.Y)) < tol + c.Radius);
+
+        // スラブ境界上 → 柱がある場合のみ二等分線
+        if (onSlabBoundary)
+            return nearColumn;
+
+        // スラブ内部 → 2本以上の梁が接触、または梁+柱
         int beamCount = 0;
         foreach (var beam in beamsInSlab)
         {
@@ -419,10 +436,6 @@ public class TributaryAreaCalculator
                 PtSegDist(pt, beam.StartPoint, beam.EndPoint) < tol)
                 beamCount++;
         }
-        // 柱に近いか
-        bool nearColumn = _columns.Any(c =>
-            Dist(pt, new Point2d(c.Center.X, c.Center.Y)) < tol + c.Radius);
-        // 2本以上の梁が接触、または梁+柱
         return beamCount >= 2 || (beamCount >= 1 && nearColumn);
     }
 
@@ -432,10 +445,10 @@ public class TributaryAreaCalculator
         var tl = sorted[0]; var tr = sorted[1]; var bl = sorted[2]; var br = sorted[3];
 
         // 梁/柱に接続されている角を判定
-        bool tlJunction = IsCornerAtBeamJunction(tl, beamsInSlab);
-        bool trJunction = IsCornerAtBeamJunction(tr, beamsInSlab);
-        bool blJunction = IsCornerAtBeamJunction(bl, beamsInSlab);
-        bool brJunction = IsCornerAtBeamJunction(br, beamsInSlab);
+        bool tlJunction = IsCornerAtBeamJunction(tl, beamsInSlab, slab);
+        bool trJunction = IsCornerAtBeamJunction(tr, beamsInSlab, slab);
+        bool blJunction = IsCornerAtBeamJunction(bl, beamsInSlab, slab);
+        bool brJunction = IsCornerAtBeamJunction(br, beamsInSlab, slab);
 
         // 接続角の二等分線を収集
         var junctionCorners = new List<(Point2d pt, double bisAng)>();
