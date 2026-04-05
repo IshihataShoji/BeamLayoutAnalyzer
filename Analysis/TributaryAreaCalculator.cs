@@ -444,11 +444,11 @@ public class TributaryAreaCalculator
         var sorted = panel.OrderByDescending(p => p.Y).ThenBy(p => p.X).ToList();
         var tl = sorted[0]; var tr = sorted[1]; var bl = sorted[2]; var br = sorted[3];
 
-        // 各辺に実際の梁があるか判定（辺の中点が梁上にあるか）
-        bool hasBeamTop   = HasBeamOnEdge(tl, tr, beamsInSlab);
-        bool hasBeamBot   = HasBeamOnEdge(bl, br, beamsInSlab);
-        bool hasBeamLeft  = HasBeamOnEdge(tl, bl, beamsInSlab);
-        bool hasBeamRight = HasBeamOnEdge(tr, br, beamsInSlab);
+        // 各辺に実際の梁があるか判定（辺の中点が梁上にあるか、スラブ境界辺は除外）
+        bool hasBeamTop   = HasBeamOnEdge(tl, tr, beamsInSlab, slab);
+        bool hasBeamBot   = HasBeamOnEdge(bl, br, beamsInSlab, slab);
+        bool hasBeamLeft  = HasBeamOnEdge(tl, bl, beamsInSlab, slab);
+        bool hasBeamRight = HasBeamOnEdge(tr, br, beamsInSlab, slab);
 
         // 角で二等分線を引くか = その角の両隣の辺が両方とも梁を持つ
         bool tlBis = hasBeamTop  && hasBeamLeft;
@@ -501,10 +501,20 @@ public class TributaryAreaCalculator
         }
     }
 
-    /// <summary>辺(eA→eB)上に実際の梁があるか判定</summary>
-    private bool HasBeamOnEdge(Point2d eA, Point2d eB, List<BeamModel> beamsInSlab)
+    /// <summary>辺(eA→eB)上に実際の梁があるか判定（スラブ境界辺は除外）</summary>
+    private bool HasBeamOnEdge(Point2d eA, Point2d eB, List<BeamModel> beamsInSlab, SlabModel slab)
     {
         var mid = new Point2d((eA.X + eB.X) / 2, (eA.Y + eB.Y) / 2);
+
+        // この辺がスラブ境界と一致する場合は梁とみなさない
+        var sv = slab.Vertices;
+        for (int i = 0; i < sv.Count; i++)
+        {
+            var sa = sv[i]; var sb = sv[(i + 1) % sv.Count];
+            if (PtSegDist(eA, sa, sb) < 0.15 && PtSegDist(eB, sa, sb) < 0.15)
+                return false; // 辺の両端がスラブ境界上 → スラブ境界辺
+        }
+
         foreach (var beam in beamsInSlab)
         {
             if (PtSegDist(mid, beam.StartPoint, beam.EndPoint) < 0.15)
