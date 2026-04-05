@@ -60,24 +60,39 @@ public class TributaryAreaCalculator
     private void AssignMarginByVoronoi(
         SlabModel slab, List<BeamModel> beamsInSlab, List<List<Point2d>> innerPanels)
     {
-        // マージンに面する梁だけを特定（梁に沿った複数点でチェック）
+        // マージンに面する梁だけを特定
         var marginBeams = new List<BeamModel>();
         foreach (var beam in beamsInSlab)
         {
-            var normal = new Vector2d(-beam.Direction.Y, beam.Direction.X);
             bool hasMarginSide = false;
-            // 始点・中点・終点の3箇所でチェック
+
+            // (A) 法線方向チェック（始点・中点・終点）
+            var normal = new Vector2d(-beam.Direction.Y, beam.Direction.X);
             foreach (var basePt in new[] { beam.StartPoint, beam.MidPoint, beam.EndPoint })
             {
                 var ptA = new Point2d(basePt.X + normal.X * 0.3, basePt.Y + normal.Y * 0.3);
                 var ptB = new Point2d(basePt.X - normal.X * 0.3, basePt.Y - normal.Y * 0.3);
-                bool aIn = innerPanels.Any(p => PointInPolygon(ptA, p));
-                bool bIn = innerPanels.Any(p => PointInPolygon(ptB, p));
-                // 片側がスラブ内かつパネル外 → マージンに面している
-                bool aIsMargin = !aIn && slab.Contains(ptA);
-                bool bIsMargin = !bIn && slab.Contains(ptB);
-                if (aIsMargin || bIsMargin) { hasMarginSide = true; break; }
+                if ((!innerPanels.Any(p => PointInPolygon(ptA, p)) && slab.Contains(ptA)) ||
+                    (!innerPanels.Any(p => PointInPolygon(ptB, p)) && slab.Contains(ptB)))
+                { hasMarginSide = true; break; }
             }
+
+            // (B) 端点周辺8方向チェック（コーナー検出）
+            if (!hasMarginSide)
+            {
+                foreach (var ep in new[] { beam.StartPoint, beam.EndPoint })
+                {
+                    for (int deg = 0; deg < 360; deg += 45)
+                    {
+                        double rad = deg * Math.PI / 180.0;
+                        var testPt = new Point2d(ep.X + Math.Cos(rad) * 0.3, ep.Y + Math.Sin(rad) * 0.3);
+                        if (slab.Contains(testPt) && !innerPanels.Any(p => PointInPolygon(testPt, p)))
+                        { hasMarginSide = true; break; }
+                    }
+                    if (hasMarginSide) break;
+                }
+            }
+
             if (hasMarginSide) marginBeams.Add(beam);
         }
         if (marginBeams.Count == 0) return;
