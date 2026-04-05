@@ -208,6 +208,39 @@ public class TributaryAreaCalculator
         return inside;
     }
 
+    /// <summary>梁の端点が他の要素に接続しているか判定</summary>
+    private bool IsEndpointConnected(
+        Point2d ep, BeamModel self, List<BeamModel> beams, SlabModel slab, double tol)
+    {
+        // (1) 他の梁の端点に近い
+        foreach (var other in beams)
+        {
+            if (other == self) continue;
+            if (Dist(ep, other.StartPoint) < tol || Dist(ep, other.EndPoint) < tol)
+                return true;
+        }
+        // (2) 他の梁の線分上にある（T字接合）
+        foreach (var other in beams)
+        {
+            if (other == self) continue;
+            if (PtSegDist(ep, other.StartPoint, other.EndPoint) < tol)
+                return true;
+        }
+        // (3) スラブ境界上にある
+        var sv = slab.Vertices;
+        for (int i = 0; i < sv.Count; i++)
+        {
+            if (PtSegDist(ep, sv[i], sv[(i + 1) % sv.Count]) < tol)
+                return true;
+        }
+        // (4) 柱に近い
+        foreach (var col in _columns)
+        {
+            if (Dist(ep, new Point2d(col.Center.X, col.Center.Y)) < tol + col.Radius)
+                return true;
+        }
+        return false;
+    }
     // ─── 平面グラフの面列挙 ─────────────────────────────────
 
     /// <summary>
@@ -223,8 +256,17 @@ public class TributaryAreaCalculator
             segs.Add((sv[i], sv[(i + 1) % sv.Count]));
         var beamsInSlab = _beams.Where(b =>
             slab.Contains(b.MidPoint) || slab.Contains(b.StartPoint) || slab.Contains(b.EndPoint)).ToList();
+
+        // 両端が接続されている梁のみ面列挙に含める（浮いた梁は除外）
+        const double CONN_TOL = 0.15; // 接続判定距離 (m)
         foreach (var b in beamsInSlab)
-            segs.Add((b.StartPoint, b.EndPoint));
+        {
+            bool startOk = IsEndpointConnected(b.StartPoint, b, beamsInSlab, slab, CONN_TOL);
+            bool endOk   = IsEndpointConnected(b.EndPoint, b, beamsInSlab, slab, CONN_TOL);
+            if (startOk && endOk)
+                segs.Add((b.StartPoint, b.EndPoint));
+            // 浮いた梁は面列挙に含めない（グリッドサンプリングで面積割当）
+        }
 
 
         // 2. 全線分の交点を求め、交点で線分を分割
@@ -274,26 +316,6 @@ public class TributaryAreaCalculator
         var adj = new List<int>[nPts];
         for (int i = 0; i < nPts; i++) adj[i] = new List<int>();
         foreach (var (a, b) in edgeSet) { if (!adj[a].Contains(b)) adj[a].Add(b); }
-
-        // 4.5 dangling辺を除去（次数1のノードを持つ辺を再帰的に削除）
-        //     片端が接続されていない梁があっても面列挙を壊さない
-        bool changed = true;
-        while (changed)
-        {
-            changed = false;
-            for (int i = 0; i < nPts; i++)
-            {
-                if (adj[i].Count == 1)
-                {
-                    int neighbor = adj[i][0];
-                    adj[i].Clear();
-                    adj[neighbor].Remove(i);
-                    edgeSet.Remove((i, neighbor));
-                    edgeSet.Remove((neighbor, i));
-                    changed = true;
-                }
-            }
-        }
 
         for (int i = 0; i < nPts; i++)
         {
