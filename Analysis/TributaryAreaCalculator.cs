@@ -157,22 +157,38 @@ public class TributaryAreaCalculator
                     }
                 }
             }
-            if (cell.Count < 3) continue;
-
-            // 梁ラインでクリップ → マージン側のみ保持
-            var norm = new Vector2d(-beam.Direction.Y, beam.Direction.X);
-            var sideA = new Point2d(beam.MidPoint.X + norm.X * 0.1, beam.MidPoint.Y + norm.Y * 0.1);
-            var sideB = new Point2d(beam.MidPoint.X - norm.X * 0.1, beam.MidPoint.Y - norm.Y * 0.1);
-
-            TryAssignMarginSide(cell, beam, sideA, innerPanels);
-            TryAssignMarginSide(cell, beam, sideB, innerPanels);
+            // ボロノイセルから内部パネル重複面積を差し引き、マージン面積を算出
+            double voronoiArea = PolygonUtils.Area(cell);
+            double innerOverlap = 0;
+            foreach (var panel in innerPanels)
+            {
+                var intersection = ClipToPolygon(cell, panel);
+                if (intersection.Count >= 3)
+                    innerOverlap += PolygonUtils.Area(intersection);
+            }
+            double marginArea = voronoiArea - innerOverlap;
+            if (marginArea > 0.01)
+            {
+                beam.TributaryArea += marginArea;
+                beam.TributaryPolygons.Add(cell);
+            }
         }
+    }
+
+    /// <summary>subjectポリゴンをclipポリゴンの内側に切り抜く（交差部分を返す）</summary>
+    private static List<Point2d> ClipToPolygon(List<Point2d> subject, List<Point2d> clip)
+    {
+        var result = new List<Point2d>(subject);
+        int n = clip.Count;
+        var centroid = new Point2d(clip.Average(p => p.X), clip.Average(p => p.Y));
+        for (int i = 0; i < n && result.Count >= 3; i++)
+            result = PolygonUtils.ClipByHalfPlane(result, clip[i], clip[(i + 1) % n], centroid);
+        return result;
     }
 
     /// <summary>2つの梁線分の最近接点ペアを求める</summary>
     private static (Point2d onA, Point2d onB) ClosestPointPair(BeamModel a, BeamModel b)
     {
-        // 4つの候補: A端点→Bへの最近接, B端点→Aへの最近接
         var candidates = new List<(Point2d pA, Point2d pB, double d)>();
         candidates.Add((a.StartPoint, ClosestOnSeg(a.StartPoint, b.StartPoint, b.EndPoint),
             PtSegDist(a.StartPoint, b.StartPoint, b.EndPoint)));
@@ -193,33 +209,6 @@ public class TributaryAreaCalculator
         if (l2 < 1e-20) return a;
         double t = Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / l2, 0, 1);
         return new Point2d(a.X + t * dx, a.Y + t * dy);
-    }
-
-    private void TryAssignMarginSide(
-        List<Point2d> voronoiCell, BeamModel beam, Point2d sidePt,
-        List<List<Point2d>> innerPanels)
-    {
-        var half = PolygonUtils.ClipByHalfPlane(
-            new List<Point2d>(voronoiCell), beam.StartPoint, beam.EndPoint, sidePt);
-        if (half.Count < 3) return;
-
-        double area = PolygonUtils.Area(half);
-        if (area < 0.01) return;
-
-        // 複数点でパネル内チェック（重心とオフセット点）
-        var ctr = new Point2d(half.Average(v => v.X), half.Average(v => v.Y));
-        // 重心からsidePt方向に少しオフセットした点も確認
-        var offPt = new Point2d(
-            ctr.X + (sidePt.X - beam.MidPoint.X) * 0.5,
-            ctr.Y + (sidePt.Y - beam.MidPoint.Y) * 0.5);
-        bool ctrInPanel = innerPanels.Any(p => PointInPolygon(ctr, p));
-        bool offInPanel = innerPanels.Any(p => PointInPolygon(offPt, p));
-
-        // 両点とも内部パネル内なら亀甲で処理済み → スキップ
-        if (ctrInPanel && offInPanel) return;
-
-        beam.TributaryArea += area;
-        beam.TributaryPolygons.Add(half);
     }
 
     private static bool PointInPolygon(Point2d pt, List<Point2d> polygon)
