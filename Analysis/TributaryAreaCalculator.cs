@@ -51,13 +51,11 @@ public class TributaryAreaCalculator
         }
     }
 
-    // ─── マージン領域のボロノイ分割 ─────────────────────────
+    // ─── マージン領域の分割（梁線分への最短距離ベース）────
 
     /// <summary>
     /// 梁に囲まれていないスラブ領域（マージン）を、
-    /// 最寄りの梁に割り当てる（梁中点ベースのボロノイ分割）。
-    /// 各梁のボロノイセルから梁ライン内側（亀甲済み）を除外し、
-    /// 外側（マージン部分）のみを割り当てる。
+    /// 最寄りの梁線分に割り当てる。
     /// </summary>
     private void AssignMarginByVoronoi(
         SlabModel slab, List<BeamModel> beamsInSlab, List<List<Point2d>> innerPanels)
@@ -69,41 +67,108 @@ public class TributaryAreaCalculator
             var normal = new Vector2d(-beam.Direction.Y, beam.Direction.X);
             var ptA = new Point2d(beam.MidPoint.X + normal.X * 0.3, beam.MidPoint.Y + normal.Y * 0.3);
             var ptB = new Point2d(beam.MidPoint.X - normal.X * 0.3, beam.MidPoint.Y - normal.Y * 0.3);
-            bool aInPanel = innerPanels.Any(p => PointInPolygon(ptA, p));
-            bool bInPanel = innerPanels.Any(p => PointInPolygon(ptB, p));
-            // 片側でもマージン（パネル外）に面していればマージン梁
-            if (!aInPanel || !bInPanel)
-                marginBeams.Add(beam);
+            bool aIn = innerPanels.Any(p => PointInPolygon(ptA, p));
+            bool bIn = innerPanels.Any(p => PointInPolygon(ptB, p));
+            if (!aIn || !bIn) marginBeams.Add(beam);
         }
         if (marginBeams.Count == 0) return;
 
-        // マージン梁のみでボロノイ分割
+        const double SHARE_TOL = 0.15;   // 端点共有の判定距離 (m)
+        const double PARALLEL_TOL = 0.1; // 平行判定（|sinθ| < 0.1 ≈ 6°）
+
         foreach (var beam in marginBeams)
         {
+            // 初期セル = スラブ全体
             var cell = new List<Point2d>(slab.Vertices);
+
             foreach (var other in marginBeams)
             {
                 if (other == beam || cell.Count == 0) continue;
-                var mid = new Point2d(
-                    (beam.MidPoint.X + other.MidPoint.X) / 2,
-                    (beam.MidPoint.Y + other.MidPoint.Y) / 2);
-                var diff = new Vector2d(
-                    other.MidPoint.X - beam.MidPoint.X,
-                    other.MidPoint.Y - beam.MidPoint.Y);
-                var perp = new Vector2d(-diff.Y, diff.X);
-                cell = PolygonUtils.ClipByHalfPlane(cell, mid,
-                    new Point2d(mid.X + perp.X, mid.Y + perp.Y), beam.MidPoint);
+
+                // ── 端点を共有するか判定 ──
+                Point2d? sharedPt = null;
+                Point2d beamOther = beam.EndPoint, otherAdj = other.EndPoint;
+                if (Dist(beam.StartPoint, other.StartPoint) < SHARE_TOL)
+                    { sharedPt = beam.StartPoint; beamOther = beam.EndPoint; otherAdj = other.EndPoint; }
+                else if (Dist(beam.StartPoint, other.EndPoint) < SHARE_TOL)
+                    { sharedPt = beam.StartPoint; beamOther = beam.EndPoint; otherAdj = other.StartPoint; }
+                else if (Dist(beam.EndPoint, other.StartPoint) < SHARE_TOL)
+                    { sharedPt = beam.EndPoint; beamOther = beam.StartPoint; otherAdj = other.EndPoint; }
+                else if (Dist(beam.EndPoint, other.EndPoint) < SHARE_TOL)
+                    { sharedPt = beam.EndPoint; beamOther = beam.StartPoint; otherAdj = other.StartPoint; }
+
+                if (sharedPt.HasValue)
+                {
+                    // ケース1: 端点共有 → 角度二等分線でクリップ
+                    var sp = sharedPt.Value;
+                    double bisAng = BisAngle(sp, beamOther, otherAdj);
+                    var bisEnd = Polar(sp, bisAng, 100);
+                    cell = PolygonUtils.ClipByHalfPlane(cell, sp, bisEnd, beam.MidPoint);
+                }
+                else
+                {
+                    // ── 平行かどうか判定 ──
+                    double cross = Math.Abs(beam.Direction.X * other.Direction.Y
+                                          - beam.Direction.Y * other.Direction.X);
+                    if (cross < PARALLEL_TOL)
+                    {
+                        // ケース2: 平行 → 中間線でクリップ
+                        var mid = new Point2d(
+                            (beam.MidPoint.X + other.MidPoint.X) / 2,
+                            (beam.MidPoint.Y + other.MidPoint.Y) / 2);
+                        // 梁方向に平行な線で分割
+                        var lineEnd = new Point2d(
+                            mid.X + beam.Direction.X, mid.Y + beam.Direction.Y);
+                        cell = PolygonUtils.ClipByHalfPlane(cell, mid, lineEnd, beam.MidPoint);
+                    }
+                    else
+                    {
+                        // ケース3: その他 → 最近接点ペアの垂直二等分線
+                        var (cpB, cpO) = ClosestPointPair(beam, other);
+                        var mid = new Point2d((cpB.X + cpO.X) / 2, (cpB.Y + cpO.Y) / 2);
+                        var diff = new Vector2d(cpO.X - cpB.X, cpO.Y - cpB.Y);
+                        var perp = new Vector2d(-diff.Y, diff.X);
+                        cell = PolygonUtils.ClipByHalfPlane(cell, mid,
+                            new Point2d(mid.X + perp.X, mid.Y + perp.Y), beam.MidPoint);
+                    }
+                }
             }
             if (cell.Count < 3) continue;
 
-            // 梁ラインの両側をチェックし、内部パネルに含まれない側だけを割り当て
-            var normal2 = new Vector2d(-beam.Direction.Y, beam.Direction.X);
-            var ptA2 = new Point2d(beam.MidPoint.X + normal2.X * 0.1, beam.MidPoint.Y + normal2.Y * 0.1);
-            var ptB2 = new Point2d(beam.MidPoint.X - normal2.X * 0.1, beam.MidPoint.Y - normal2.Y * 0.1);
+            // 梁ラインでクリップ → マージン側のみ保持
+            var norm = new Vector2d(-beam.Direction.Y, beam.Direction.X);
+            var sideA = new Point2d(beam.MidPoint.X + norm.X * 0.1, beam.MidPoint.Y + norm.Y * 0.1);
+            var sideB = new Point2d(beam.MidPoint.X - norm.X * 0.1, beam.MidPoint.Y - norm.Y * 0.1);
 
-            TryAssignMarginSide(cell, beam, ptA2, innerPanels);
-            TryAssignMarginSide(cell, beam, ptB2, innerPanels);
+            TryAssignMarginSide(cell, beam, sideA, innerPanels);
+            TryAssignMarginSide(cell, beam, sideB, innerPanels);
         }
+    }
+
+    /// <summary>2つの梁線分の最近接点ペアを求める</summary>
+    private static (Point2d onA, Point2d onB) ClosestPointPair(BeamModel a, BeamModel b)
+    {
+        // 4つの候補: A端点→Bへの最近接, B端点→Aへの最近接
+        var candidates = new List<(Point2d pA, Point2d pB, double d)>();
+        candidates.Add((a.StartPoint, ClosestOnSeg(a.StartPoint, b.StartPoint, b.EndPoint),
+            PtSegDist(a.StartPoint, b.StartPoint, b.EndPoint)));
+        candidates.Add((a.EndPoint, ClosestOnSeg(a.EndPoint, b.StartPoint, b.EndPoint),
+            PtSegDist(a.EndPoint, b.StartPoint, b.EndPoint)));
+        candidates.Add((ClosestOnSeg(b.StartPoint, a.StartPoint, a.EndPoint), b.StartPoint,
+            PtSegDist(b.StartPoint, a.StartPoint, a.EndPoint)));
+        candidates.Add((ClosestOnSeg(b.EndPoint, a.StartPoint, a.EndPoint), b.EndPoint,
+            PtSegDist(b.EndPoint, a.StartPoint, a.EndPoint)));
+        var best = candidates.OrderBy(c => c.d).First();
+        return (best.pA, best.pB);
+    }
+
+    /// <summary>点pから線分ab上の最近接点を返す</summary>
+    private static Point2d ClosestOnSeg(Point2d p, Point2d a, Point2d b)
+    {
+        double dx = b.X - a.X, dy = b.Y - a.Y, l2 = dx * dx + dy * dy;
+        if (l2 < 1e-20) return a;
+        double t = Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / l2, 0, 1);
+        return new Point2d(a.X + t * dx, a.Y + t * dy);
     }
 
     private void TryAssignMarginSide(
@@ -114,11 +179,8 @@ public class TributaryAreaCalculator
             new List<Point2d>(voronoiCell), beam.StartPoint, beam.EndPoint, sidePt);
         if (half.Count < 3) return;
 
-        // この半分の重心が内部パネルに含まれるか確認
         var ctr = new Point2d(half.Average(v => v.X), half.Average(v => v.Y));
-        bool insidePanel = innerPanels.Any(p => PointInPolygon(ctr, p));
-
-        if (insidePanel) return; // 内部パネル側 → 既に亀甲で処理済
+        if (innerPanels.Any(p => PointInPolygon(ctr, p))) return;
 
         double area = PolygonUtils.Area(half);
         if (area > 0.1)
