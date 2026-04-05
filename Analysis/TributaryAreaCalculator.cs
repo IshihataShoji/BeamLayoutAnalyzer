@@ -30,7 +30,8 @@ public class TributaryAreaCalculator
         foreach (var slab in _slabs)
         {
             if (slab.Vertices.Count < 3) continue;
-            // 梁+スラブ境界の線分から平面グラフを構築し、閉じた面(パネル)を列挙
+
+            // ① 梁に囲まれたパネル → 亀甲分割
             var panels = FindPanels(slab);
             foreach (var panel in panels)
             {
@@ -40,7 +41,90 @@ public class TributaryAreaCalculator
                 else if (clean.Count == 3) PartitionTriangle(clean);
                 else PartitionGeneral(clean);
             }
+
+            // ② マージン領域（梁で囲まれていない部分）→ ボロノイ分割
+            var beamsInSlab = _beams.Where(b =>
+                slab.Contains(b.MidPoint) || slab.Contains(b.StartPoint) || slab.Contains(b.EndPoint)).ToList();
+            double assignedArea = beamsInSlab.Sum(b => b.TributaryArea);
+            if (slab.Area - assignedArea > 0.5)
+                AssignMarginByVoronoi(slab, beamsInSlab, panels);
         }
+    }
+
+    // ─── マージン領域のボロノイ分割 ─────────────────────────
+
+    /// <summary>
+    /// 梁に囲まれていないスラブ領域（マージン）を、
+    /// 最寄りの梁に割り当てる（梁中点ベースのボロノイ分割）。
+    /// 各梁のボロノイセルから梁ライン内側（亀甲済み）を除外し、
+    /// 外側（マージン部分）のみを割り当てる。
+    /// </summary>
+    private void AssignMarginByVoronoi(
+        SlabModel slab, List<BeamModel> beamsInSlab, List<List<Point2d>> innerPanels)
+    {
+        foreach (var beam in beamsInSlab)
+        {
+            // 梁中点ベースのボロノイセルを計算
+            var cell = new List<Point2d>(slab.Vertices);
+            foreach (var other in beamsInSlab)
+            {
+                if (other == beam || cell.Count == 0) continue;
+                var mid = new Point2d(
+                    (beam.MidPoint.X + other.MidPoint.X) / 2,
+                    (beam.MidPoint.Y + other.MidPoint.Y) / 2);
+                var diff = new Vector2d(
+                    other.MidPoint.X - beam.MidPoint.X,
+                    other.MidPoint.Y - beam.MidPoint.Y);
+                var perp = new Vector2d(-diff.Y, diff.X);
+                cell = PolygonUtils.ClipByHalfPlane(cell, mid,
+                    new Point2d(mid.X + perp.X, mid.Y + perp.Y), beam.MidPoint);
+            }
+            if (cell.Count < 3) continue;
+
+            // 梁ラインの両側をチェックし、内部パネルに含まれない側だけを割り当て
+            var normal = new Vector2d(-beam.Direction.Y, beam.Direction.X);
+            var ptA = new Point2d(beam.MidPoint.X + normal.X * 0.1, beam.MidPoint.Y + normal.Y * 0.1);
+            var ptB = new Point2d(beam.MidPoint.X - normal.X * 0.1, beam.MidPoint.Y - normal.Y * 0.1);
+
+            TryAssignMarginSide(cell, beam, ptA, innerPanels);
+            TryAssignMarginSide(cell, beam, ptB, innerPanels);
+        }
+    }
+
+    private void TryAssignMarginSide(
+        List<Point2d> voronoiCell, BeamModel beam, Point2d sidePt,
+        List<List<Point2d>> innerPanels)
+    {
+        var half = PolygonUtils.ClipByHalfPlane(
+            new List<Point2d>(voronoiCell), beam.StartPoint, beam.EndPoint, sidePt);
+        if (half.Count < 3) return;
+
+        // この半分の重心が内部パネルに含まれるか確認
+        var ctr = new Point2d(half.Average(v => v.X), half.Average(v => v.Y));
+        bool insidePanel = innerPanels.Any(p => PointInPolygon(ctr, p));
+
+        if (insidePanel) return; // 内部パネル側 → 既に亀甲で処理済
+
+        double area = PolygonUtils.Area(half);
+        if (area > 0.1)
+        {
+            beam.TributaryArea += area;
+            beam.TributaryPolygons.Add(half);
+        }
+    }
+
+    private static bool PointInPolygon(Point2d pt, List<Point2d> polygon)
+    {
+        bool inside = false;
+        int n = polygon.Count;
+        for (int i = 0, j = n - 1; i < n; j = i++)
+        {
+            var a = polygon[i]; var b = polygon[j];
+            if ((a.Y > pt.Y) != (b.Y > pt.Y) &&
+                pt.X < (b.X - a.X) * (pt.Y - a.Y) / (b.Y - a.Y) + a.X)
+                inside = !inside;
+        }
+        return inside;
     }
 
     // ─── 平面グラフの面列挙 ─────────────────────────────────
