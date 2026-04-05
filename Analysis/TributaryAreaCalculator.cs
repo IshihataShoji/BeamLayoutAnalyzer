@@ -208,8 +208,91 @@ public class TributaryAreaCalculator
         if (region.Count < 3) return;
         double area = PolygonUtils.Area(region);
         if (area < 1e-6) return;
-        var beam = FindBeam(eA, eB);
-        if (beam != null) { beam.TributaryArea += area; beam.TributaryPolygons.Add(region); }
+
+        // 辺上の全梁を取得
+        var beams = FindAllBeamsOnEdge(eA, eB);
+        if (beams.Count <= 1)
+        {
+            var beam = beams.Count == 1 ? beams[0] : FindBeam(eA, eB);
+            if (beam != null) { beam.TributaryArea += area; beam.TributaryPolygons.Add(region); }
+            return;
+        }
+
+        // 複数梁：辺方向でソート
+        double edx = eB.X - eA.X, edy = eB.Y - eA.Y;
+        double eLen = Math.Sqrt(edx * edx + edy * edy);
+        if (eLen < 1e-9) return;
+        double enx = edx / eLen, eny = edy / eLen;
+        beams.Sort((a, b) =>
+        {
+            double ta = (a.MidPoint.X - eA.X) * enx + (a.MidPoint.Y - eA.Y) * eny;
+            double tb = (b.MidPoint.X - eA.X) * enx + (b.MidPoint.Y - eA.Y) * eny;
+            return ta.CompareTo(tb);
+        });
+
+        // 梁の接合点で分割
+        var splitPts = new List<Point2d>();
+        for (int i = 0; i < beams.Count - 1; i++)
+        {
+            // 接合点＝beam[i]の端点とbeam[i+1]の端点の中間
+            Point2d bestPt = beams[i].EndPoint;
+            double bestD = double.MaxValue;
+            foreach (var ep in new[] { beams[i].StartPoint, beams[i].EndPoint })
+                foreach (var sp in new[] { beams[i + 1].StartPoint, beams[i + 1].EndPoint })
+                {
+                    double d = Dist(ep, sp);
+                    if (d < bestD) { bestD = d; bestPt = new Point2d((ep.X + sp.X) / 2, (ep.Y + sp.Y) / 2); }
+                }
+            double t = ((bestPt.X - eA.X) * enx + (bestPt.Y - eA.Y) * eny);
+            if (t > eLen * 0.02 && t < eLen * 0.98)
+                splitPts.Add(new Point2d(eA.X + t * enx, eA.Y + t * eny));
+        }
+
+        if (splitPts.Count == 0)
+        {
+            beams[0].TributaryArea += area;
+            beams[0].TributaryPolygons.Add(region);
+            return;
+        }
+
+        // 辺に垂直な線で分割
+        double px = -eny, py = enx;
+        var remaining = new List<Point2d>(region);
+        for (int i = 0; i < splitPts.Count && remaining.Count >= 3; i++)
+        {
+            var sp = splitPts[i];
+            var cutB = new Point2d(sp.X + px, sp.Y + py);
+            var piece = PolygonUtils.ClipByHalfPlane(new List<Point2d>(remaining), sp, cutB, eA);
+            if (piece.Count >= 3)
+            {
+                double pa = PolygonUtils.Area(piece);
+                if (pa > 1e-6) { beams[i].TributaryArea += pa; beams[i].TributaryPolygons.Add(piece); }
+            }
+            remaining = PolygonUtils.ClipByHalfPlane(remaining, sp, cutB, eB);
+            eA = sp;
+        }
+        if (remaining.Count >= 3)
+        {
+            double ra = PolygonUtils.Area(remaining);
+            if (ra > 1e-6) { beams[^1].TributaryArea += ra; beams[^1].TributaryPolygons.Add(remaining); }
+        }
+    }
+
+    /// <summary>辺eA→eB上にある全ての梁を返す</summary>
+    private List<BeamModel> FindAllBeamsOnEdge(Point2d eA, Point2d eB)
+    {
+        double eLen = Dist(eA, eB); if (eLen < 1e-9) return new();
+        var eDir = new Vector2d((eB.X - eA.X) / eLen, (eB.Y - eA.Y) / eLen);
+        double tol = Math.Max(eLen * 0.2, 0.15);
+        var result = new List<BeamModel>();
+        foreach (var b in _beams)
+        {
+            if (Math.Abs(eDir.X * b.Direction.X + eDir.Y * b.Direction.Y) < 0.8) continue;
+            double ld = PtLineDist(b.MidPoint, eA, eB); if (ld > tol) continue;
+            double t = ((b.MidPoint.X - eA.X) * eDir.X + (b.MidPoint.Y - eA.Y) * eDir.Y) / eLen;
+            if (t > -0.1 && t < 1.1) result.Add(b);
+        }
+        return result;
     }
 
     // ─── ヘルパー ────────────────────────────────────────────
