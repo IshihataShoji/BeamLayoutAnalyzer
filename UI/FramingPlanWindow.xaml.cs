@@ -32,6 +32,9 @@ public partial class FramingPlanWindow : Window
     private readonly Dictionary<BeamModel,   Line>    _beamVis = new();
     private readonly Dictionary<ColumnModel, Ellipse> _colVis  = new();
 
+    // ─── ハイライト表示用 ─────────────────────────────────────
+    private readonly List<System.Windows.Shapes.Polygon> _highlightPolys = new();
+
     // ─── ブラシ定数 ──────────────────────────────────────────
     private static readonly Brush SlabFill      = Freeze(new SolidColorBrush(Color.FromArgb(45,  100, 149, 237)));
     private static readonly Brush SlabStroke    = Freeze(new SolidColorBrush(Color.FromRgb( 100, 149, 237)));
@@ -77,6 +80,7 @@ public partial class FramingPlanWindow : Window
 
         _selectedBeam   = null;
         _selectedColumn = null;
+        ClearHighlight();
         MemberInfoPanel.Children.Clear();
         MemberInfoPanel.Children.Add(new TextBlock
         {
@@ -406,6 +410,8 @@ public partial class FramingPlanWindow : Window
         if (_mode != DisplayMode.Beams) return;
         if (sender is not Line { Tag: BeamModel beam }) return;
 
+        // 前回の選択を解除
+        ClearHighlight();
         if (_selectedBeam != null && _beamVis.TryGetValue(_selectedBeam, out var prev))
             prev.Stroke = _selectedBeam.Type == BeamType.大梁 ? MainNormal : SubNormal;
 
@@ -414,8 +420,32 @@ public partial class FramingPlanWindow : Window
         if (_beamVis.TryGetValue(beam, out var sel))
             sel.Stroke = beam.Type == BeamType.大梁 ? MainSel : SubSel;
 
+        // 負担面積ポリゴンをハイライト表示
+        foreach (var region in beam.TributaryPolygons)
+        {
+            var poly = new System.Windows.Shapes.Polygon
+            {
+                Fill            = new SolidColorBrush(Color.FromArgb(100, 100, 255, 100)),
+                Stroke          = new SolidColorBrush(Color.FromArgb(200, 100, 255, 150)),
+                StrokeThickness = 1.5,
+                IsHitTestVisible = false,
+            };
+            foreach (var v in region)
+                poly.Points.Add(ToCanvas(v.X, v.Y));
+            DrawingCanvas.Children.Add(poly);
+            _highlightPolys.Add(poly);
+        }
+
         ShowBeamInfo(beam);
         e.Handled = true;
+    }
+
+    /// <summary>負担面積ハイライトをクリア</summary>
+    private void ClearHighlight()
+    {
+        foreach (var p in _highlightPolys)
+            DrawingCanvas.Children.Remove(p);
+        _highlightPolys.Clear();
     }
 
     private void OnColClick(object sender, MouseButtonEventArgs e)
