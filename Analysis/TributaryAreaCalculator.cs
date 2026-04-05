@@ -274,6 +274,27 @@ public class TributaryAreaCalculator
         var adj = new List<int>[nPts];
         for (int i = 0; i < nPts; i++) adj[i] = new List<int>();
         foreach (var (a, b) in edgeSet) { if (!adj[a].Contains(b)) adj[a].Add(b); }
+
+        // 4.5 dangling辺を除去（次数1のノードを持つ辺を再帰的に削除）
+        //     片端が接続されていない梁があっても面列挙を壊さない
+        bool changed = true;
+        while (changed)
+        {
+            changed = false;
+            for (int i = 0; i < nPts; i++)
+            {
+                if (adj[i].Count == 1)
+                {
+                    int neighbor = adj[i][0];
+                    adj[i].Clear();
+                    adj[neighbor].Remove(i);
+                    edgeSet.Remove((i, neighbor));
+                    edgeSet.Remove((neighbor, i));
+                    changed = true;
+                }
+            }
+        }
+
         for (int i = 0; i < nPts; i++)
         {
             var pi = pts[i];
