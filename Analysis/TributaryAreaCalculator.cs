@@ -444,20 +444,24 @@ public class TributaryAreaCalculator
         var sorted = panel.OrderByDescending(p => p.Y).ThenBy(p => p.X).ToList();
         var tl = sorted[0]; var tr = sorted[1]; var bl = sorted[2]; var br = sorted[3];
 
-        // 梁/柱に接続されている角を判定
-        bool tlJunction = IsCornerAtBeamJunction(tl, beamsInSlab, slab);
-        bool trJunction = IsCornerAtBeamJunction(tr, beamsInSlab, slab);
-        bool blJunction = IsCornerAtBeamJunction(bl, beamsInSlab, slab);
-        bool brJunction = IsCornerAtBeamJunction(br, beamsInSlab, slab);
+        // 各辺に実際の梁があるか判定（辺の中点が梁上にあるか）
+        bool hasBeamTop   = HasBeamOnEdge(tl, tr, beamsInSlab);
+        bool hasBeamBot   = HasBeamOnEdge(bl, br, beamsInSlab);
+        bool hasBeamLeft  = HasBeamOnEdge(tl, bl, beamsInSlab);
+        bool hasBeamRight = HasBeamOnEdge(tr, br, beamsInSlab);
 
-        // 接続角の二等分線を収集
+        // 角で二等分線を引くか = その角の両隣の辺が両方とも梁を持つ
+        bool tlBis = hasBeamTop  && hasBeamLeft;
+        bool trBis = hasBeamTop  && hasBeamRight;
+        bool blBis = hasBeamBot  && hasBeamLeft;
+        bool brBis = hasBeamBot  && hasBeamRight;
+
         var junctionCorners = new List<(Point2d pt, double bisAng)>();
-        if (tlJunction) junctionCorners.Add((tl, BisAngle(tl, tr, bl)));
-        if (trJunction) junctionCorners.Add((tr, BisAngle(tr, tl, br)));
-        if (blJunction) junctionCorners.Add((bl, BisAngle(bl, tl, br)));
-        if (brJunction) junctionCorners.Add((br, BisAngle(br, bl, tr)));
+        if (tlBis) junctionCorners.Add((tl, BisAngle(tl, tr, bl)));
+        if (trBis) junctionCorners.Add((tr, BisAngle(tr, tl, br)));
+        if (blBis) junctionCorners.Add((bl, BisAngle(bl, tl, br)));
+        if (brBis) junctionCorners.Add((br, BisAngle(br, bl, tr)));
 
-        // 全角が接続 → 通常の亀甲分割
         if (junctionCorners.Count == 4)
         {
             PartitionQuadFull(tl, tr, bl, br, slab);
@@ -495,6 +499,18 @@ public class TributaryAreaCalculator
         {
             PartitionQuadFull(tl, tr, bl, br, slab);
         }
+    }
+
+    /// <summary>辺(eA→eB)上に実際の梁があるか判定</summary>
+    private bool HasBeamOnEdge(Point2d eA, Point2d eB, List<BeamModel> beamsInSlab)
+    {
+        var mid = new Point2d((eA.X + eB.X) / 2, (eA.Y + eB.Y) / 2);
+        foreach (var beam in beamsInSlab)
+        {
+            if (PtSegDist(mid, beam.StartPoint, beam.EndPoint) < 0.15)
+                return true;
+        }
+        return false;
     }
 
     /// <summary>通常の亀甲分割（全角が梁/柱接続）</summary>
