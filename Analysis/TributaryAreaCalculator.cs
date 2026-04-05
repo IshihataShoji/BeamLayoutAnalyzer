@@ -41,8 +41,8 @@ public class TributaryAreaCalculator
                 var clean = CleanPolygon(panel);
                 if (clean.Count < 3 || PolygonUtils.Area(clean) < 1e-4) continue;
                 if (clean.Count == 4) PartitionQuad(clean, slab, beamsInSlab);
-                else if (clean.Count == 3) PartitionTriangle(clean);
-                else PartitionGeneral(clean);
+                else if (clean.Count == 3) PartitionTriangle(clean, slab, beamsInSlab);
+                else PartitionGeneral(clean, slab, beamsInSlab);
             }
 
             // ② マージン領域（梁で囲まれていない部分）→ グリッド分割
@@ -561,24 +561,58 @@ public class TributaryAreaCalculator
         Assign(clipped, eA, eB);
     }
 
-    private void PartitionTriangle(List<Point2d> panel)
+    private void PartitionTriangle(List<Point2d> panel, SlabModel slab, List<BeamModel> beamsInSlab)
     {
         var p0 = panel[0]; var p1 = panel[1]; var p2 = panel[2];
-        double ext = Dist(p0, p1) * 2;
-        var c = LineInter(p0, Polar(p0, BisAngle(p0, p1, p2), ext),
-                          p1, Polar(p1, BisAngle(p1, p0, p2), ext));
-        if (!c.HasValue) return;
-        Assign(new() { p0, p1, c.Value }, p0, p1);
-        Assign(new() { p1, p2, c.Value }, p1, p2);
-        Assign(new() { p2, p0, c.Value }, p2, p0);
+
+        // 各辺に梁があるかチェック
+        bool e01 = HasBeamOnEdge(p0, p1, beamsInSlab, slab);
+        bool e12 = HasBeamOnEdge(p1, p2, beamsInSlab, slab);
+        bool e20 = HasBeamOnEdge(p2, p0, beamsInSlab, slab);
+
+        // 角で二等分線を引くか = 両隣の辺が梁を持つ
+        bool bis0 = e01 && e20;
+        bool bis1 = e01 && e12;
+        bool bis2 = e12 && e20;
+
+        var junctions = new List<(Point2d pt, double bisAng)>();
+        if (bis0) junctions.Add((p0, BisAngle(p0, p1, p2)));
+        if (bis1) junctions.Add((p1, BisAngle(p1, p0, p2)));
+        if (bis2) junctions.Add((p2, BisAngle(p2, p0, p1)));
+
+        if (junctions.Count >= 2)
+        {
+            double ext = Dist(p0, p1) * 2;
+            var c = LineInter(junctions[0].pt, Polar(junctions[0].pt, junctions[0].bisAng, ext),
+                              junctions[1].pt, Polar(junctions[1].pt, junctions[1].bisAng, ext));
+            if (!c.HasValue) c = new Point2d((p0.X+p1.X+p2.X)/3, (p0.Y+p1.Y+p2.Y)/3);
+            AssignClipped(new() { p0, p1, c.Value }, p0, p1, slab);
+            AssignClipped(new() { p1, p2, c.Value }, p1, p2, slab);
+            AssignClipped(new() { p2, p0, c.Value }, p2, p0, slab);
+        }
+        else if (junctions.Count == 1)
+        {
+            var c = junctions[0].pt;
+            AssignClipped(new() { p0, p1, c }, p0, p1, slab);
+            AssignClipped(new() { p1, p2, c }, p1, p2, slab);
+            AssignClipped(new() { p2, p0, c }, p2, p0, slab);
+        }
+        else
+        {
+            // 二等分線なし → 重心で分割
+            var c = new Point2d((p0.X+p1.X+p2.X)/3, (p0.Y+p1.Y+p2.Y)/3);
+            AssignClipped(new() { p0, p1, c }, p0, p1, slab);
+            AssignClipped(new() { p1, p2, c }, p1, p2, slab);
+            AssignClipped(new() { p2, p0, c }, p2, p0, slab);
+        }
     }
 
-    private void PartitionGeneral(List<Point2d> panel)
+    private void PartitionGeneral(List<Point2d> panel, SlabModel slab, List<BeamModel> beamsInSlab)
     {
         int n = panel.Count;
         double cx = panel.Average(v => v.X), cy = panel.Average(v => v.Y);
         for (int i = 0; i < n; i++)
-            Assign(new() { panel[i], panel[(i + 1) % n], new(cx, cy) }, panel[i], panel[(i + 1) % n]);
+            AssignClipped(new() { panel[i], panel[(i + 1) % n], new(cx, cy) }, panel[i], panel[(i + 1) % n], slab);
     }
 
     private void Assign(List<Point2d> region, Point2d eA, Point2d eB)
