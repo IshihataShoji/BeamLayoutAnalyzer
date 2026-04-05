@@ -34,293 +34,479 @@ public class TributaryAreaCalculator
             var beamsInSlab = _beams.Where(b =>
                 slab.Contains(b.MidPoint) || slab.Contains(b.StartPoint) || slab.Contains(b.EndPoint)).ToList();
 
-            // 面列挙で全パネルを検出 → パネルの辺を共有する梁にのみ面積を割当
-            var panels = FindPanels(slab);
-            foreach (var panel in panels)
+            // ── Step 1: ベース線分を収集（スラブ境界 + 梁 + 浮き梁延長）──
+            var baseSegs = CollectBaseSegments(slab, beamsInSlab);
+
+            // ── Step 2: 全節点を収集し属性を判定 ──
+            // ── Step 3: 属性に基づき二等分線を生成 ──
+            var bisectors = GenerateBisectors(baseSegs, slab, beamsInSlab);
+
+            // ── Step 3.5: スキューネスポイント接続 ──
+            var basePanels = EnumerateFaces(baseSegs, slab);
+            ConnectSkewnessPoints(bisectors, baseSegs, basePanels);
+
+            // ── Step 4: 全線分で面列挙 → サブパネル検出 ──
+            var allSegs = new List<(Point2d a, Point2d b)>(baseSegs);
+            allSegs.AddRange(bisectors);
+            var subPanels = EnumerateFaces(allSegs, slab);
+
+            // ── Step 5: パネルの辺を共有する梁に面積を割当 ──
+            foreach (var panel in subPanels)
             {
-                var clean = CleanPolygon(panel);
-                if (clean.Count < 3 || PolygonUtils.Area(clean) < 1e-4) continue;
-                PartitionPanel(clean, slab, beamsInSlab);
-            }
-        }
-    }
+                double area = PolygonUtils.Area(panel);
+                if (area < 1e-4) continue;
 
-    // ─── マージン領域の分割（グリッドサンプリング方式）────
-
-    /// <summary>
-    /// 梁に囲まれていないスラブ領域（マージン）を、
-    /// 最寄りの梁線分に割り当てる。
-    /// スラブ上にグリッドを敷き、各点が内部パネル外であれば
-    /// 最短距離の梁に面積を割り当てる。
-    /// 内部パネルの亀甲分割には一切影響しない。
-    /// </summary>
-    private void AssignMarginByGrid(
-        SlabModel slab, List<BeamModel> beamsInSlab, List<List<Point2d>> innerPanels)
-    {
-        if (beamsInSlab.Count == 0) return;
-
-        double minX = slab.Vertices.Min(v => v.X);
-        double maxX = slab.Vertices.Max(v => v.X);
-        double minY = slab.Vertices.Min(v => v.Y);
-        double maxY = slab.Vertices.Max(v => v.Y);
-
-        double gridSize = 0.1; // 0.1m（10cm）精度
-        double cellArea = gridSize * gridSize;
-
-        var marginAreas = new Dictionary<BeamModel, double>();
-        var marginPoints = new Dictionary<BeamModel, List<Point2d>>();
-
-        for (double x = minX + gridSize / 2; x < maxX; x += gridSize)
-        {
-            for (double y = minY + gridSize / 2; y < maxY; y += gridSize)
-            {
-                var pt = new Point2d(x, y);
-                if (!slab.Contains(pt)) continue;
-                if (innerPanels.Any(p => PointInPolygon(pt, p))) continue;
-
-                BeamModel? nearest = null;
-                double minDist = double.MaxValue;
-                foreach (var beam in beamsInSlab)
+                var beamsOnEdge = new HashSet<BeamModel>();
+                for (int i = 0; i < panel.Count; i++)
                 {
-                    double d = PtSegDist(pt, beam.StartPoint, beam.EndPoint);
-                    if (d < minDist) { minDist = d; nearest = beam; }
+                    var eA = panel[i]; var eB = panel[(i + 1) % panel.Count];
+                    var mid = new Point2d((eA.X + eB.X) / 2, (eA.Y + eB.Y) / 2);
+                    foreach (var beam in beamsInSlab)
+                    {
+                        if (PtSegDist(mid, beam.StartPoint, beam.EndPoint) < 0.15)
+                            beamsOnEdge.Add(beam);
+                    }
                 }
-                if (nearest == null) continue;
 
-                if (!marginAreas.ContainsKey(nearest))
+                if (beamsOnEdge.Count == 0) continue;
+                double share = area / beamsOnEdge.Count;
+                foreach (var beam in beamsOnEdge)
                 {
-                    marginAreas[nearest] = 0;
-                    marginPoints[nearest] = new List<Point2d>();
-                }
-                marginAreas[nearest] += cellArea;
-                marginPoints[nearest].Add(pt);
-            }
-        }
-
-        const double SHARE_TOL = 0.15;
-
-        foreach (var kvp in marginAreas)
-        {
-            if (kvp.Value < 0.01) continue;
-            kvp.Key.TributaryArea += kvp.Value;
-
-            var beam = kvp.Key;
-            var pts = marginPoints[beam];
-            if (pts.Count < 3) continue;
-
-            // スラブポリゴンから出発（角がスラブ境界と正確に一致）
-            var poly = new List<Point2d>(slab.Vertices);
-
-            // 梁ラインでクリップ → マージン側のみ保持
-            var marginCtr = new Point2d(pts.Average(p => p.X), pts.Average(p => p.Y));
-            poly = PolygonUtils.ClipByHalfPlane(poly, beam.StartPoint, beam.EndPoint, marginCtr);
-            if (poly.Count < 3) continue;
-
-            // 他のマージン梁との分割線でクリップ
-            foreach (var other in beamsInSlab)
-            {
-                if (other == beam || poly.Count < 3) continue;
-                if (!marginAreas.ContainsKey(other)) continue;
-
-                // 端点共有判定
-                Point2d? sharedPt = null;
-                Point2d beamOther = beam.EndPoint, otherAdj = other.EndPoint;
-                if (Dist(beam.StartPoint, other.StartPoint) < SHARE_TOL)
-                    { sharedPt = beam.StartPoint; beamOther = beam.EndPoint; otherAdj = other.EndPoint; }
-                else if (Dist(beam.StartPoint, other.EndPoint) < SHARE_TOL)
-                    { sharedPt = beam.StartPoint; beamOther = beam.EndPoint; otherAdj = other.StartPoint; }
-                else if (Dist(beam.EndPoint, other.StartPoint) < SHARE_TOL)
-                    { sharedPt = beam.EndPoint; beamOther = beam.StartPoint; otherAdj = other.EndPoint; }
-                else if (Dist(beam.EndPoint, other.EndPoint) < SHARE_TOL)
-                    { sharedPt = beam.EndPoint; beamOther = beam.StartPoint; otherAdj = other.StartPoint; }
-
-                if (sharedPt.HasValue)
-                {
-                    // 端点共有 → 角度二等分線（ただしスラブ境界上ならスキップ）
-                    var sp = sharedPt.Value;
-                    if (IsOnSlabBoundary(slab, sp)) continue;
-                    double bisAng = BisAngle(sp, beamOther, otherAdj);
-                    var bisEnd = Polar(sp, bisAng, 100);
-                    poly = PolygonUtils.ClipByHalfPlane(poly, sp, bisEnd, beam.MidPoint);
-                }
-                else
-                {
-                    // 非共有 → 中点間の垂直二等分線
-                    var mid = new Point2d(
-                        (beam.MidPoint.X + other.MidPoint.X) / 2,
-                        (beam.MidPoint.Y + other.MidPoint.Y) / 2);
-                    var diff = new Vector2d(
-                        other.MidPoint.X - beam.MidPoint.X,
-                        other.MidPoint.Y - beam.MidPoint.Y);
-                    var perp = new Vector2d(-diff.Y, diff.X);
-                    poly = PolygonUtils.ClipByHalfPlane(poly, mid,
-                        new Point2d(mid.X + perp.X, mid.Y + perp.Y), beam.MidPoint);
+                    beam.TributaryArea += share;
+                    beam.TributaryPolygons.Add(panel);
                 }
             }
-
-            if (poly.Count >= 3)
-                beam.TributaryPolygons.Add(poly);
         }
     }
 
-    private static List<Point2d> ConvexHull(List<Point2d> points)
+    // ─── ベース線分の収集 ─────────────────────────────────────
+
+    private List<(Point2d a, Point2d b)> CollectBaseSegments(SlabModel slab, List<BeamModel> beamsInSlab)
     {
-        var pts = points.OrderBy(p => p.X).ThenBy(p => p.Y).ToList();
-        int n = pts.Count;
-        if (n < 3) return new List<Point2d>(pts);
-        var hull = new List<Point2d>();
-        foreach (var p in pts)
-        {
-            while (hull.Count >= 2 && CrossProduct(hull[hull.Count - 2], hull[hull.Count - 1], p) <= 0)
-                hull.RemoveAt(hull.Count - 1);
-            hull.Add(p);
-        }
-        int lower = hull.Count + 1;
-        for (int i = n - 2; i >= 0; i--)
-        {
-            while (hull.Count >= lower && CrossProduct(hull[hull.Count - 2], hull[hull.Count - 1], pts[i]) <= 0)
-                hull.RemoveAt(hull.Count - 1);
-            hull.Add(pts[i]);
-        }
-        hull.RemoveAt(hull.Count - 1);
-        return hull;
-    }
-
-    private static double CrossProduct(Point2d o, Point2d a, Point2d b)
-        => (a.X - o.X) * (b.Y - o.Y) - (a.Y - o.Y) * (b.X - o.X);
-
-    private static bool PointInPolygon(Point2d pt, List<Point2d> polygon)
-    {
-        bool inside = false;
-        int n = polygon.Count;
-        for (int i = 0, j = n - 1; i < n; j = i++)
-        {
-            var a = polygon[i]; var b = polygon[j];
-            if ((a.Y > pt.Y) != (b.Y > pt.Y) &&
-                pt.X < (b.X - a.X) * (pt.Y - a.Y) / (b.Y - a.Y) + a.X)
-                inside = !inside;
-        }
-        return inside;
-    }
-
-    /// <summary>梁の端点が他の要素に接続しているか判定</summary>
-    private bool IsEndpointConnected(
-        Point2d ep, BeamModel self, List<BeamModel> beams, SlabModel slab, double tol)
-    {
-        // (1) 他の梁の端点に近い
-        foreach (var other in beams)
-        {
-            if (other == self) continue;
-            if (Dist(ep, other.StartPoint) < tol || Dist(ep, other.EndPoint) < tol)
-                return true;
-        }
-        // (2) 他の梁の線分上にある（T字接合）
-        foreach (var other in beams)
-        {
-            if (other == self) continue;
-            if (PtSegDist(ep, other.StartPoint, other.EndPoint) < tol)
-                return true;
-        }
-        // (3) スラブ境界上にある
-        var sv = slab.Vertices;
-        for (int i = 0; i < sv.Count; i++)
-        {
-            if (PtSegDist(ep, sv[i], sv[(i + 1) % sv.Count]) < tol)
-                return true;
-        }
-        // (4) 柱に近い
-        foreach (var col in _columns)
-        {
-            if (Dist(ep, new Point2d(col.Center.X, col.Center.Y)) < tol + col.Radius)
-                return true;
-        }
-        return false;
-    }
-    // ─── 平面グラフの面列挙 ─────────────────────────────────
-
-    /// <summary>自由端を梁方向にスラブ境界まで延長した点を返す</summary>
-    private static Point2d ExtendToSlabBoundary(Point2d freeEnd, Point2d connectedEnd, SlabModel slab)
-    {
-        // 梁の方向: connectedEnd → freeEnd
-        var dir = new Vector2d(freeEnd.X - connectedEnd.X, freeEnd.Y - connectedEnd.Y);
-        double len = Math.Sqrt(dir.X * dir.X + dir.Y * dir.Y);
-        if (len < 1e-10) return freeEnd;
-        var d = new Vector2d(dir.X / len, dir.Y / len);
-
-        // freeEnd から方向 d に沿ってスラブ境界との交点を求める
-        var sv = slab.Vertices;
-        double bestT = double.MaxValue;
-        Point2d bestPt = freeEnd;
-        for (int i = 0; i < sv.Count; i++)
-        {
-            var p = sv[i];
-            var q = sv[(i + 1) % sv.Count];
-            // Ray: freeEnd + t * d  と  線分 p-q の交点を求める
-            double ex = q.X - p.X, ey = q.Y - p.Y;
-            double denom = d.X * ey - d.Y * ex;
-            if (Math.Abs(denom) < 1e-10) continue;
-            double t = ((p.X - freeEnd.X) * ey - (p.Y - freeEnd.Y) * ex) / denom;
-            double u = ((p.X - freeEnd.X) * d.Y - (p.Y - freeEnd.Y) * d.X) / denom;
-            if (t > 1e-6 && u >= -1e-6 && u <= 1 + 1e-6 && t < bestT)
-            {
-                bestT = t;
-                bestPt = new Point2d(freeEnd.X + t * d.X, freeEnd.Y + t * d.Y);
-            }
-        }
-        return bestPt;
-    }
-
-    /// <summary>
-    /// スラブ境界+梁の線分で平面グラフを構築し、
-    /// 梁で囲まれた閉じた領域（サブパネル）を全て列挙する。
-    /// </summary>
-    private List<List<Point2d>> FindPanels(SlabModel slab)
-    {
-        // 1. 線分を収集（スラブ境界 + スラブ内の梁）
         var segs = new List<(Point2d a, Point2d b)>();
         var sv = slab.Vertices;
         for (int i = 0; i < sv.Count; i++)
             segs.Add((sv[i], sv[(i + 1) % sv.Count]));
-        var beamsInSlab = _beams.Where(b =>
-            slab.Contains(b.MidPoint) || slab.Contains(b.StartPoint) || slab.Contains(b.EndPoint)).ToList();
 
-        // 全梁を面列挙に含める（浮いた梁は自由端をスラブ境界まで延長）
         const double CONN_TOL = 0.15;
         foreach (var b in beamsInSlab)
         {
             bool startOk = IsEndpointConnected(b.StartPoint, b, beamsInSlab, slab, CONN_TOL);
             bool endOk   = IsEndpointConnected(b.EndPoint, b, beamsInSlab, slab, CONN_TOL);
-
             var segStart = b.StartPoint;
             var segEnd   = b.EndPoint;
-
-            // 自由端をスラブ境界まで延長
-            if (!startOk)
-                segStart = ExtendToSlabBoundary(b.StartPoint, b.EndPoint, slab);
-            if (!endOk)
-                segEnd = ExtendToSlabBoundary(b.EndPoint, b.StartPoint, slab);
-
+            if (!startOk) segStart = ExtendToSlabBoundary(b.StartPoint, b.EndPoint, slab);
+            if (!endOk)   segEnd   = ExtendToSlabBoundary(b.EndPoint, b.StartPoint, slab);
             segs.Add((segStart, segEnd));
         }
+        return segs;
+    }
 
+    // ─── 二等分線の生成 ──────────────────────────────────────
 
-        // 2. 全線分の交点を求め、交点で線分を分割
+    private List<(Point2d a, Point2d b)> GenerateBisectors(
+        List<(Point2d a, Point2d b)> segs,
+        SlabModel slab,
+        List<BeamModel> beamsInSlab)
+    {
+        const double TOL = 0.15;
+        var bisectors = new List<(Point2d a, Point2d b)>();
+
+        // ── 全節点を収集（線分端点＝スラブ角・柱・梁端点）──
+        var ptMap = new Dictionary<long, Point2d>();
+        long ptKey(Point2d p) => ((long)Math.Round(p.X * 10000)) * 100000000L + (long)Math.Round(p.Y * 10000);
+        void addNode(Point2d p) { var k = ptKey(p); if (!ptMap.ContainsKey(k)) ptMap[k] = p; }
+
+        foreach (var seg in segs)
+        {
+            addNode(seg.a);
+            addNode(seg.b);
+        }
+
+        var nodes = ptMap.Values.ToList();
+
+        // ── Phase 1: 各節点の各線分に対してペアを作り二等分線レイを収集 ──
+        var rays = new List<(Point2d origin, double angle)>();
+
+        // デバッグログ（コマンドラインのみ）
+        var ed = Autodesk.AutoCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument?.Editor;
+        void logMsg(string s) { ed?.WriteMessage($"\n{s}"); }
+        logMsg($"[Bisector] Nodes:{nodes.Count} Segs:{segs.Count} Beams:{beamsInSlab.Count}");
+
+        foreach (var node in nodes)
+        {
+            // 条件1: 柱の節点か
+            bool isColumn = _columns.Any(c =>
+                Dist(node, new Point2d(c.Center.X, c.Center.Y)) < TOL + c.Radius);
+
+            // 条件2: 梁の端点が2つ以上重なっているか
+            int beamEndpointCount = 0;
+            foreach (var beam in beamsInSlab)
+            {
+                if (Dist(node, beam.StartPoint) < TOL) beamEndpointCount++;
+                if (Dist(node, beam.EndPoint)   < TOL) beamEndpointCount++;
+            }
+
+            // 条件3: 梁の端点を1つ以上共有し、かつ、いずれかの梁の線分座標上にある
+            bool endpointOnBeamLine = false;
+            if (beamEndpointCount >= 1)
+            {
+                foreach (var beam in beamsInSlab)
+                {
+                    bool atEndpoint = Dist(node, beam.StartPoint) < TOL || Dist(node, beam.EndPoint) < TOL;
+                    if (!atEndpoint && PtSegDist(node, beam.StartPoint, beam.EndPoint) < TOL)
+                    { endpointOnBeamLine = true; break; }
+                }
+            }
+
+            // ルール: 柱→引く、梁端点2以上→引く、梁端点共有+梁線分上→引く、それ以外→引かない
+            if (!isColumn && beamEndpointCount < 2 && !endpointOnBeamLine)
+            {
+                // logMsg($"[SKIP] ({node.X:F3},{node.Y:F3}) col={isColumn} ep={beamEndpointCount} onLine={endpointOnBeamLine}");
+                continue;
+            }
+            // logMsg($"[GEN]  ({node.X:F3},{node.Y:F3}) col={isColumn} ep={beamEndpointCount} onLine={endpointOnBeamLine}");
+
+            // この節点を端点としている線分を全て走査し角度を収集（0～2π）
+            var edgeAngles = new List<double>();
+            int segIdx = 0;
+            foreach (var seg in segs)
+            {
+                double distA = Dist(node, seg.a);
+                double distB = Dist(node, seg.b);
+                double distSeg = PtSegDist(node, seg.a, seg.b);
+
+                double dx, dy;
+                if (distA < TOL)
+                {
+                    dx = seg.b.X - node.X; dy = seg.b.Y - node.Y;
+                    if (Math.Sqrt(dx * dx + dy * dy) > 1e-6)
+                    {
+                        double ang = NormalizeAngle(Math.Atan2(dy, dx));
+                        edgeAngles.Add(ang);
+                        // logMsg($"  seg{segIdx}: EP-A dist={distA:F3} -> {ang * 180 / Math.PI:F1} deg");
+                    }
+                }
+                else if (distB < TOL)
+                {
+                    dx = seg.a.X - node.X; dy = seg.a.Y - node.Y;
+                    if (Math.Sqrt(dx * dx + dy * dy) > 1e-6)
+                    {
+                        double ang = NormalizeAngle(Math.Atan2(dy, dx));
+                        edgeAngles.Add(ang);
+                        // logMsg($"  seg{segIdx}: EP-B dist={distB:F3} -> {ang * 180 / Math.PI:F1} deg");
+                    }
+                }
+                else if (distSeg < TOL)
+                {
+                    // T字接合: ノードが線分の途中にある → 両方向を追加
+                    double dx1 = seg.a.X - node.X, dy1 = seg.a.Y - node.Y;
+                    double dx2 = seg.b.X - node.X, dy2 = seg.b.Y - node.Y;
+                    if (Math.Sqrt(dx1 * dx1 + dy1 * dy1) > 1e-6)
+                        edgeAngles.Add(NormalizeAngle(Math.Atan2(dy1, dx1)));
+                    if (Math.Sqrt(dx2 * dx2 + dy2 * dy2) > 1e-6)
+                        edgeAngles.Add(NormalizeAngle(Math.Atan2(dy2, dx2)));
+                    // logMsg($"  seg{segIdx}: T-JCT distSeg={distSeg:F3}");
+                }
+                else
+                {
+                    // logMsg($"  seg{segIdx}: MISS dA={distA:F3} dB={distB:F3} dSeg={distSeg:F3}");
+                }
+                segIdx++;
+            }
+
+            if (edgeAngles.Count < 2)
+            {
+                // logMsg($"  => edges={edgeAngles.Count} SKIP(too few)");
+                continue;
+            }
+
+            // 重複角度を除去してソート（0～2πの範囲で昇順）
+            edgeAngles.Sort();
+            var unique = new List<double> { edgeAngles[0] };
+            for (int i = 1; i < edgeAngles.Count; i++)
+                if (edgeAngles[i] - unique[^1] > 0.02) unique.Add(edgeAngles[i]);
+            // ラップアラウンド: 末尾(≈360°)と先頭(≈0°)が同方向なら末尾を除去
+            if (unique.Count >= 2 && (2 * Math.PI - unique[^1] + unique[0]) < 0.02)
+                unique.RemoveAt(unique.Count - 1);
+            edgeAngles = unique;
+            if (edgeAngles.Count < 2)
+            {
+                // logMsg($"  => unique={edgeAngles.Count} SKIP(after dedup)");
+                continue;
+            }
+            // logMsg($"  => edges={edgeAngles.Count} angles=[{string.Join(", ", edgeAngles.Select(a => $"{a * 180 / Math.PI:F1}"))}]");
+
+            int N = edgeAngles.Count;
+
+            // 重複統合用: この節点で生成済みの二等分線角度
+            var generatedAngles = new HashSet<int>();
+
+            // ── 各線分に対して処理（右回り360°評価）──
+            for (int si = 0; si < N; si++)
+            {
+                double sAngle = edgeAngles[si];
+
+                // ① 他の全線分への右回り(CW)角度を計算
+                double minCW = double.MaxValue;
+                int minIdx = -1;
+                for (int oi = 0; oi < N; oi++)
+                {
+                    if (oi == si) continue;
+                    double cw = NormalizeAngle(sAngle - edgeAngles[oi]);
+                    if (cw > 0.02 && cw < minCW)
+                    {
+                        minCW = cw;
+                        minIdx = oi;
+                    }
+                }
+
+                if (minIdx < 0) continue;
+
+                // ② 最小角度のペアに対してのみ二等分線を生成
+                double bisAngle = NormalizeAngle(sAngle - minCW / 2);
+                int angleKey = (int)Math.Round(bisAngle * 1000);
+                if (generatedAngles.Add(angleKey))
+                {
+                    rays.Add((node, bisAngle));
+                    // logMsg($"  bisector: S={sAngle * 180 / Math.PI:F1} CW={minCW * 180 / Math.PI:F1} -> bis={bisAngle * 180 / Math.PI:F1}");
+                }
+            }
+        }
+
+        // ── Phase 2: 分割線の終点を決定 ──
+        //  Step A: 全レイをスラブ境界まで延伸 → 長い線分を生成
+        //  Step B: 全線分同士の交点を計算
+        //  Step C: 各線分の終点 = 始点（節点）から最も近い交点
+
+        // スラブ境界辺
+        var slabEdges = new List<(Point2d a, Point2d b)>();
+        var sv2 = slab.Vertices;
+        for (int i = 0; i < sv2.Count; i++)
+            slabEdges.Add((sv2[i], sv2[(i + 1) % sv2.Count]));
+
+        // Step A: 全レイをスラブ境界まで延伸
+        var fullLines = new List<(Point2d origin, Point2d slabEnd)>();
+        foreach (var (origin, angle) in rays)
+        {
+            var dir = new Vector2d(Math.Cos(angle), Math.Sin(angle));
+            double bestT = double.MaxValue;
+            foreach (var seg in slabEdges)
+            {
+                double t = RaySegIntersect(origin, dir, seg.a, seg.b);
+                if (t > 1e-3 && t < bestT) bestT = t;
+            }
+            if (bestT < double.MaxValue)
+            {
+                var slabEnd = new Point2d(origin.X + bestT * dir.X, origin.Y + bestT * dir.Y);
+                fullLines.Add((origin, slabEnd));
+            }
+        }
+
+        logMsg($"[Bisector] FullLines:{fullLines.Count}");
+
+        // Step B & C: 反復トリミング
+        //  1パス目: fullLine同士の交差で各線分をトリミング
+        //  2パス目以降: トリミング後の線分同士で再交差チェックし、
+        //             相手が実際に到達しない交差を除去（収束するまで繰り返し）
+
+        // 現在の終点リスト（初期値 = スラブ境界）
+        var currentEnds = fullLines.Select(f => f.slabEnd).ToList();
+        var beamSegs = segs.Skip(sv2.Count).ToList();
+
+        for (int pass = 0; pass < 5; pass++) // 最大5パス
+        {
+            bool changed = false;
+            var newEnds = new List<Point2d>();
+
+            for (int li = 0; li < fullLines.Count; li++)
+            {
+                var origin = fullLines[li].origin;
+                var slabEnd = fullLines[li].slabEnd;
+                double bestDist = Dist(origin, slabEnd); // スラブ境界までの距離
+                Point2d bestEnd = slabEnd;
+
+                // 梁線分との交差もチェック（起点に接続している梁はスキップ）
+                foreach (var bseg in beamSegs)
+                {
+                    if (Dist(origin, bseg.a) < TOL || Dist(origin, bseg.b) < TOL) continue;
+                    if (PtSegDist(origin, bseg.a, bseg.b) < TOL) continue;
+                    var cross = SegSegIntersect(origin, slabEnd, bseg.a, bseg.b);
+                    if (cross.HasValue)
+                    {
+                        double d = Dist(origin, cross.Value);
+                        if (d > TOL && d < bestDist)
+                        {
+                            bestDist = d;
+                            bestEnd = cross.Value;
+                        }
+                    }
+                }
+
+                // 他の分割線との交差
+                for (int oi = 0; oi < fullLines.Count; oi++)
+                {
+                    if (oi == li) continue;
+                    var otherOrigin = fullLines[oi].origin;
+
+                    // 同一ノードからの別方向線分はスキップ
+                    if (Dist(origin, otherOrigin) < TOL) continue;
+
+                    // 相手の現在の有効区間（origin → currentEnd）との交差をチェック
+                    var otherEnd = currentEnds[oi];
+                    var cross = SegSegIntersect(origin, slabEnd, otherOrigin, otherEnd);
+                    if (cross.HasValue)
+                    {
+                        double d = Dist(origin, cross.Value);
+                        if (d > TOL && d < bestDist)
+                        {
+                            bestDist = d;
+                            bestEnd = cross.Value;
+                        }
+                    }
+                }
+
+                newEnds.Add(bestEnd);
+                if (Dist(bestEnd, currentEnds[li]) > 0.001) changed = true;
+            }
+
+            currentEnds = newEnds;
+            logMsg($"[Bisector] Pass {pass}: changed={changed}");
+            if (!changed) break;
+        }
+
+        // 結果をbisectorsに格納
+        for (int li = 0; li < fullLines.Count; li++)
+        {
+            var origin = fullLines[li].origin;
+            var end = currentEnds[li];
+            // logMsg($"  BIS ({origin.X:F3},{origin.Y:F3})->({end.X:F3},{end.Y:F3}) D={Dist(origin, end):F3}");
+            bisectors.Add((origin, end));
+        }
+
+        // ── 座標が完全に重複する分割線を統合 ──
+        var seen = new HashSet<long>();
+        var uniqueBisectors = new List<(Point2d a, Point2d b)>();
+        foreach (var bis in bisectors)
+        {
+            long k1 = ((long)Math.Round(bis.a.X * 1000)) * 10000000L + (long)Math.Round(bis.a.Y * 1000);
+            long k2 = ((long)Math.Round(bis.b.X * 1000)) * 10000000L + (long)Math.Round(bis.b.Y * 1000);
+            long keyAB = k1 * 100000000000L + k2;
+            long keyBA = k2 * 100000000000L + k1;
+            if (seen.Add(keyAB))
+            {
+                seen.Add(keyBA);
+                uniqueBisectors.Add(bis);
+            }
+        }
+
+        logMsg($"[Bisector] Rays:{rays.Count} Bisectors:{uniqueBisectors.Count}");
+        return uniqueBisectors;
+    }
+
+    /// <summary>レイ(origin + t*dir)と線分(a,b)の交点パラメータtを返す</summary>
+    private static double RaySegIntersect(Point2d origin, Vector2d dir, Point2d a, Point2d b)
+    {
+        double ex = b.X - a.X, ey = b.Y - a.Y;
+        double den = dir.X * ey - dir.Y * ex;
+        if (Math.Abs(den) < 1e-10) return double.MaxValue;
+        double dx = a.X - origin.X, dy = a.Y - origin.Y;
+        double t = (dx * ey - dy * ex) / den;
+        double s = (dx * dir.Y - dy * dir.X) / den;
+        return (t > 0 && s >= -1e-8 && s <= 1 + 1e-8) ? t : double.MaxValue;
+    }
+
+    /// <summary>2本のレイの交点パラメータt（1本目のレイ上のパラメータ）を返す</summary>
+    private static double RayRayIntersect(Point2d o1, Vector2d d1, Point2d o2, Vector2d d2)
+    {
+        double den = d1.X * d2.Y - d1.Y * d2.X;
+        if (Math.Abs(den) < 1e-10) return double.MaxValue;
+        double dx = o2.X - o1.X, dy = o2.Y - o1.Y;
+        double t = (dx * d2.Y - dy * d2.X) / den;
+        double s = (dx * d1.Y - dy * d1.X) / den;
+        return (t > 0 && s > 0) ? t : double.MaxValue;
+    }
+
+    // ─── スキューネスポイントの接続 ──────────────────────────
+
+    private void ConnectSkewnessPoints(
+        List<(Point2d a, Point2d b)> bisectors,
+        List<(Point2d a, Point2d b)> baseSegs,
+        List<List<Point2d>> basePanels)
+    {
+        const double TOL = 0.15;
+        var freeEnds = new List<(Point2d pt, int panelIdx)>();
+
+        for (int bi = 0; bi < bisectors.Count; bi++)
+        {
+            foreach (var ep in new[] { bisectors[bi].a, bisectors[bi].b })
+            {
+                bool onBase = baseSegs.Any(s => PtSegDist(ep, s.a, s.b) < TOL);
+                if (!onBase)
+                {
+                    for (int pi = 0; pi < basePanels.Count; pi++)
+                    {
+                        if (PointInPolygon(ep, basePanels[pi]))
+                        { freeEnds.Add((ep, pi)); break; }
+                    }
+                }
+            }
+        }
+
+        var byPanel = freeEnds.GroupBy(f => f.panelIdx);
+        foreach (var g in byPanel)
+        {
+            // 座標の重複除去
+            var rawPts = g.Select(f => f.pt).ToList();
+            var pts = new List<Point2d> { rawPts[0] };
+            for (int i = 1; i < rawPts.Count; i++)
+            {
+                if (!pts.Any(p => Dist(p, rawPts[i]) < TOL))
+                    pts.Add(rawPts[i]);
+            }
+
+            // 2点以上の場合、最近傍チェーンで接続
+            if (pts.Count >= 2)
+            {
+                var remaining = new List<Point2d>(pts);
+                var current = remaining[0];
+                remaining.RemoveAt(0);
+                while (remaining.Count > 0)
+                {
+                    int nearIdx = 0;
+                    double nearD = double.MaxValue;
+                    for (int i = 0; i < remaining.Count; i++)
+                    {
+                        double d = Dist(current, remaining[i]);
+                        if (d < nearD) { nearD = d; nearIdx = i; }
+                    }
+                    bisectors.Add((current, remaining[nearIdx]));
+                    current = remaining[nearIdx];
+                    remaining.RemoveAt(nearIdx);
+                }
+            }
+        }
+    }
+
+    // ─── 平面グラフの面列挙 ─────────────────────────────────
+
+    private List<List<Point2d>> EnumerateFaces(
+        List<(Point2d a, Point2d b)> segs, SlabModel slab)
+    {
+        // 1. 全線分の交点を求め、交点で線分を分割
         var pts = new List<Point2d>();
-        var ptMap = new Dictionary<long, int>();
+        var ptMapF = new Dictionary<long, int>();
         int addPt(Point2d p)
         {
-            // 0.0001m (0.1mm) 精度で丸め
             long key = ((long)Math.Round(p.X * 10000)) * 100000000L + (long)Math.Round(p.Y * 10000);
-            if (ptMap.TryGetValue(key, out int idx)) return idx;
-            idx = pts.Count; pts.Add(p); ptMap[key] = idx; return idx;
+            if (ptMapF.TryGetValue(key, out int idx)) return idx;
+            idx = pts.Count; pts.Add(p); ptMapF[key] = idx; return idx;
         }
 
         int nSeg = segs.Count;
         var segPts = new List<List<(double t, int idx)>>();
         for (int i = 0; i < nSeg; i++)
-        {
             segPts.Add(new() { (0.0, addPt(segs[i].a)), (1.0, addPt(segs[i].b)) });
-        }
 
         for (int i = 0; i < nSeg; i++)
             for (int j = i + 1; j < nSeg; j++)
@@ -334,7 +520,7 @@ public class TributaryAreaCalculator
                 if (t2 > 1e-6 && t2 < 1 - 1e-6) segPts[j].Add((t2, pidx));
             }
 
-        // 3. 辺リストを構築
+        // 2. 辺リストを構築
         var edgeSet = new HashSet<(int, int)>();
         for (int i = 0; i < nSeg; i++)
         {
@@ -346,7 +532,7 @@ public class TributaryAreaCalculator
             }
         }
 
-        // 4. 隣接リストを角度順にソート
+        // 3. 隣接リストを角度順にソート
         int nPts = pts.Count;
         var adj = new List<int>[nPts];
         for (int i = 0; i < nPts; i++) adj[i] = new List<int>();
@@ -363,7 +549,7 @@ public class TributaryAreaCalculator
             });
         }
 
-        // 5. 面を列挙（各有向辺の左側の面をトレース）
+        // 4. 面を列挙（各有向辺の左側の面をトレース）
         var visited = new HashSet<long>();
         long eKey(int a, int b) => (long)a * nPts + b;
         var faces = new List<List<Point2d>>();
@@ -379,7 +565,6 @@ public class TributaryAreaCalculator
                 if (visited.Contains(eKey(cu, cv))) break;
                 visited.Add(eKey(cu, cv));
                 face.Add(cu);
-                // cv での次の辺：adj[cv] で cu の位置を探し、1つ前（CW方向）
                 int idx = adj[cv].IndexOf(cu);
                 if (idx < 0) { ok = false; break; }
                 int w = adj[cv][(idx - 1 + adj[cv].Count) % adj[cv].Count];
@@ -388,10 +573,8 @@ public class TributaryAreaCalculator
             if (!ok || face.Count < 3) continue;
             var poly = face.Select(i => pts[i]).ToList();
             double sa = SignedArea(poly);
-            if (sa > 1e-4) // CCW = 有限面（内部）
+            if (sa > 1e-4 && sa < slab.Area * 0.9)
             {
-                // スラブ境界そのもの（全体）は除外
-                if (sa > slab.Area * 0.9) continue;
                 var ctr = new Point2d(poly.Average(p => p.X), poly.Average(p => p.Y));
                 if (slab.Contains(ctr))
                     faces.Add(poly);
@@ -400,333 +583,72 @@ public class TributaryAreaCalculator
         return faces;
     }
 
-    // ─── パネル面積割当（辺を共有する梁のみ） ────────────────
+    // ─── ヘルパー ────────────────────────────────────────────
 
-    /// <summary>
-    /// パネルの辺を共有する梁にのみ面積を割り当てる。
-    /// 梁同士が接する角では亀甲分割（二等分線）、
-    /// スラブ境界に接する角では二等分線を引かない。
-    /// </summary>
-    private void PartitionPanel(List<Point2d> panel, SlabModel slab, List<BeamModel> beamsInSlab)
+    /// <summary>梁の端点が他の要素に接続しているか判定</summary>
+    private bool IsEndpointConnected(
+        Point2d ep, BeamModel self, List<BeamModel> beams, SlabModel slab, double tol)
     {
-        if (panel.Count == 4) PartitionQuad(panel, slab, beamsInSlab);
-        else if (panel.Count == 3) PartitionTriangle(panel, slab, beamsInSlab);
-        else PartitionGeneral(panel, slab, beamsInSlab);
-    }
-
-    // ─── 四角形の亀甲分割（LISP準拠）──────────────────────
-
-    /// <summary>パネル角が梁/柱のジャンクションか判定（接続されていれば二等分線を引く）</summary>
-    private bool IsCornerAtBeamJunction(Point2d pt, List<BeamModel> beamsInSlab, SlabModel slab, double tol = 0.15)
-    {
-        // スラブ境界上にある角は基本的に二等分線を引かない
-        bool onSlabBoundary = false;
+        foreach (var other in beams)
+        {
+            if (other == self) continue;
+            if (Dist(ep, other.StartPoint) < tol || Dist(ep, other.EndPoint) < tol)
+                return true;
+        }
+        foreach (var other in beams)
+        {
+            if (other == self) continue;
+            if (PtSegDist(ep, other.StartPoint, other.EndPoint) < tol)
+                return true;
+        }
         var sv = slab.Vertices;
         for (int i = 0; i < sv.Count; i++)
         {
-            if (PtSegDist(pt, sv[i], sv[(i + 1) % sv.Count]) < tol)
-            { onSlabBoundary = true; break; }
+            if (PtSegDist(ep, sv[i], sv[(i + 1) % sv.Count]) < tol)
+                return true;
         }
-
-        // 柱に近いか
-        bool nearColumn = _columns.Any(c =>
-            Dist(pt, new Point2d(c.Center.X, c.Center.Y)) < tol + c.Radius);
-
-        // スラブ境界上 → 柱がある場合のみ二等分線
-        if (onSlabBoundary)
-            return nearColumn;
-
-        // スラブ内部 → 2本以上の梁が接触、または梁+柱
-        int beamCount = 0;
-        foreach (var beam in beamsInSlab)
+        foreach (var col in _columns)
         {
-            if (Dist(pt, beam.StartPoint) < tol || Dist(pt, beam.EndPoint) < tol ||
-                PtSegDist(pt, beam.StartPoint, beam.EndPoint) < tol)
-                beamCount++;
-        }
-        return beamCount >= 2 || (beamCount >= 1 && nearColumn);
-    }
-
-    private void PartitionQuad(List<Point2d> panel, SlabModel slab, List<BeamModel> beamsInSlab)
-    {
-        var sorted = panel.OrderByDescending(p => p.Y).ThenBy(p => p.X).ToList();
-        var tl = sorted[0]; var tr = sorted[1]; var bl = sorted[2]; var br = sorted[3];
-
-        // 各辺に実際の梁があるか判定（辺の中点が梁上にあるか、スラブ境界辺は除外）
-        bool hasBeamTop   = HasBeamOnEdge(tl, tr, beamsInSlab, slab);
-        bool hasBeamBot   = HasBeamOnEdge(bl, br, beamsInSlab, slab);
-        bool hasBeamLeft  = HasBeamOnEdge(tl, bl, beamsInSlab, slab);
-        bool hasBeamRight = HasBeamOnEdge(tr, br, beamsInSlab, slab);
-
-        // 角がスラブ境界上にあるか
-        bool tlOnBound = IsOnSlabBoundary(slab, tl);
-        bool trOnBound = IsOnSlabBoundary(slab, tr);
-        bool blOnBound = IsOnSlabBoundary(slab, bl);
-        bool brOnBound = IsOnSlabBoundary(slab, br);
-
-        // 角で二等分線を引くか = 両隣の辺が梁 AND 角がスラブ境界上でない
-        bool tlBis = hasBeamTop  && hasBeamLeft  && !tlOnBound;
-        bool trBis = hasBeamTop  && hasBeamRight && !trOnBound;
-        bool blBis = hasBeamBot  && hasBeamLeft  && !blOnBound;
-        bool brBis = hasBeamBot  && hasBeamRight && !brOnBound;
-
-        var junctionCorners = new List<(Point2d pt, double bisAng)>();
-        if (tlBis) junctionCorners.Add((tl, BisAngle(tl, tr, bl)));
-        if (trBis) junctionCorners.Add((tr, BisAngle(tr, tl, br)));
-        if (blBis) junctionCorners.Add((bl, BisAngle(bl, tl, br)));
-        if (brBis) junctionCorners.Add((br, BisAngle(br, bl, tr)));
-
-        if (junctionCorners.Count == 4)
-        {
-            PartitionQuadFull(tl, tr, bl, br, slab);
-            return;
-        }
-
-        if (junctionCorners.Count >= 2)
-        {
-            double ext = Math.Max(Math.Abs(tr.X - tl.X), Math.Abs(tl.Y - bl.Y)) * 2;
-            var c0 = junctionCorners[0];
-            var c1 = junctionCorners[1];
-            var e0 = Polar(c0.pt, c0.bisAng, ext);
-            var e1 = Polar(c1.pt, c1.bisAng, ext);
-            var sk = LineInter(c0.pt, e0, c1.pt, e1);
-            if (!sk.HasValue)
-            {
-                PartitionQuadFull(tl, tr, bl, br, slab);
-                return;
-            }
-            var s = sk.Value;
-            AssignClipped(new() { tl, tr, s }, tl, tr, slab);
-            AssignClipped(new() { bl, br, s }, bl, br, slab);
-            AssignClipped(new() { tl, bl, s }, tl, bl, slab);
-            AssignClipped(new() { tr, br, s }, tr, br, slab);
-        }
-        else if (junctionCorners.Count == 1)
-        {
-            var c = junctionCorners[0].pt;
-            AssignClipped(new() { tl, tr, c }, tl, tr, slab);
-            AssignClipped(new() { bl, br, c }, bl, br, slab);
-            AssignClipped(new() { tl, bl, c }, tl, bl, slab);
-            AssignClipped(new() { tr, br, c }, tr, br, slab);
-        }
-        else
-        {
-            PartitionQuadFull(tl, tr, bl, br, slab);
-        }
-    }
-
-    /// <summary>辺(eA→eB)上に実際の梁があるか判定（スラブ境界辺は除外）</summary>
-    private bool HasBeamOnEdge(Point2d eA, Point2d eB, List<BeamModel> beamsInSlab, SlabModel slab)
-    {
-        var mid = new Point2d((eA.X + eB.X) / 2, (eA.Y + eB.Y) / 2);
-
-        // この辺がスラブ境界と一致する場合は梁とみなさない
-        var sv = slab.Vertices;
-        for (int i = 0; i < sv.Count; i++)
-        {
-            var sa = sv[i]; var sb = sv[(i + 1) % sv.Count];
-            if (PtSegDist(eA, sa, sb) < 0.15 && PtSegDist(eB, sa, sb) < 0.15)
-                return false; // 辺の両端がスラブ境界上 → スラブ境界辺
-        }
-
-        foreach (var beam in beamsInSlab)
-        {
-            if (PtSegDist(mid, beam.StartPoint, beam.EndPoint) < 0.15)
+            if (Dist(ep, new Point2d(col.Center.X, col.Center.Y)) < tol + col.Radius)
                 return true;
         }
         return false;
     }
 
-    /// <summary>通常の亀甲分割（全角が梁/柱接続）</summary>
-    private void PartitionQuadFull(Point2d tl, Point2d tr, Point2d bl, Point2d br, SlabModel slab)
+    /// <summary>自由端を梁方向にスラブ境界まで延長した点を返す</summary>
+    private static Point2d ExtendToSlabBoundary(Point2d freeEnd, Point2d connectedEnd, SlabModel slab)
     {
-        double bisTL = BisAngle(tl, tr, bl), bisTR = BisAngle(tr, tl, br);
-        double bisBL = BisAngle(bl, tl, br), bisBR = BisAngle(br, bl, tr);
-        double w = Math.Abs(tr.X - tl.X), h = Math.Abs(tl.Y - bl.Y);
-        double ext = Math.Max(w, h) * 2;
-        var eTL = Polar(tl, bisTL, ext); var eTR = Polar(tr, bisTR, ext);
-        var eBL = Polar(bl, bisBL, ext); var eBR = Polar(br, bisBR, ext);
-        Point2d? skA, skB;
-        List<Point2d> rT, rB, rL, rR;
-        if (w < h) {
-            skA = LineInter(tl, eTL, tr, eTR); skB = LineInter(bl, eBL, br, eBR);
-            if (!skA.HasValue || !skB.HasValue) return;
-            rT = new() { tl, tr, skA.Value }; rB = new() { bl, br, skB.Value };
-            rL = new() { tl, bl, skB.Value, skA.Value }; rR = new() { tr, br, skB.Value, skA.Value };
-        } else {
-            skA = LineInter(tl, eTL, bl, eBL); skB = LineInter(tr, eTR, br, eBR);
-            if (!skA.HasValue || !skB.HasValue) return;
-            rT = new() { tl, tr, skB.Value, skA.Value }; rB = new() { bl, br, skB.Value, skA.Value };
-            rL = new() { tl, bl, skA.Value }; rR = new() { tr, br, skB.Value };
-        }
-        AssignClipped(rT, tl, tr, slab); AssignClipped(rB, bl, br, slab);
-        AssignClipped(rL, tl, bl, slab); AssignClipped(rR, tr, br, slab);
-    }
-
-    /// <summary>分割ポリゴンをスラブ範囲内にクリップしてからAssign</summary>
-    private void AssignClipped(List<Point2d> region, Point2d eA, Point2d eB, SlabModel slab)
-    {
-        // スラブ境界の各辺でクリップ（スラブ内に収める）
-        var clipped = new List<Point2d>(region);
+        var dir = new Vector2d(freeEnd.X - connectedEnd.X, freeEnd.Y - connectedEnd.Y);
+        double len = Math.Sqrt(dir.X * dir.X + dir.Y * dir.Y);
+        if (len < 1e-10) return freeEnd;
+        var d = new Vector2d(dir.X / len, dir.Y / len);
         var sv = slab.Vertices;
-        var center = new Point2d(sv.Average(p => p.X), sv.Average(p => p.Y));
-        for (int i = 0; i < sv.Count && clipped.Count >= 3; i++)
-            clipped = PolygonUtils.ClipByHalfPlane(clipped, sv[i], sv[(i + 1) % sv.Count], center);
-        Assign(clipped, eA, eB);
-    }
-
-    private void PartitionTriangle(List<Point2d> panel, SlabModel slab, List<BeamModel> beamsInSlab)
-    {
-        var p0 = panel[0]; var p1 = panel[1]; var p2 = panel[2];
-
-        // 各辺に梁があるかチェック
-        bool e01 = HasBeamOnEdge(p0, p1, beamsInSlab, slab);
-        bool e12 = HasBeamOnEdge(p1, p2, beamsInSlab, slab);
-        bool e20 = HasBeamOnEdge(p2, p0, beamsInSlab, slab);
-
-        // 角がスラブ境界上にあるか
-        bool b0 = IsOnSlabBoundary(slab, p0);
-        bool b1 = IsOnSlabBoundary(slab, p1);
-        bool b2 = IsOnSlabBoundary(slab, p2);
-
-        // 角で二等分線を引くか = 両隣の辺が梁 AND 角がスラブ境界上でない
-        bool bis0 = e01 && e20 && !b0;
-        bool bis1 = e01 && e12 && !b1;
-        bool bis2 = e12 && e20 && !b2;
-
-        var junctions = new List<(Point2d pt, double bisAng)>();
-        if (bis0) junctions.Add((p0, BisAngle(p0, p1, p2)));
-        if (bis1) junctions.Add((p1, BisAngle(p1, p0, p2)));
-        if (bis2) junctions.Add((p2, BisAngle(p2, p0, p1)));
-
-        if (junctions.Count >= 2)
+        double bestT = double.MaxValue;
+        Point2d bestPt = freeEnd;
+        for (int i = 0; i < sv.Count; i++)
         {
-            double ext = Dist(p0, p1) * 2;
-            var c = LineInter(junctions[0].pt, Polar(junctions[0].pt, junctions[0].bisAng, ext),
-                              junctions[1].pt, Polar(junctions[1].pt, junctions[1].bisAng, ext));
-            if (!c.HasValue) c = new Point2d((p0.X+p1.X+p2.X)/3, (p0.Y+p1.Y+p2.Y)/3);
-            AssignClipped(new() { p0, p1, c.Value }, p0, p1, slab);
-            AssignClipped(new() { p1, p2, c.Value }, p1, p2, slab);
-            AssignClipped(new() { p2, p0, c.Value }, p2, p0, slab);
-        }
-        else if (junctions.Count == 1)
-        {
-            var c = junctions[0].pt;
-            AssignClipped(new() { p0, p1, c }, p0, p1, slab);
-            AssignClipped(new() { p1, p2, c }, p1, p2, slab);
-            AssignClipped(new() { p2, p0, c }, p2, p0, slab);
-        }
-        else
-        {
-            // 二等分線なし → 重心で分割
-            var c = new Point2d((p0.X+p1.X+p2.X)/3, (p0.Y+p1.Y+p2.Y)/3);
-            AssignClipped(new() { p0, p1, c }, p0, p1, slab);
-            AssignClipped(new() { p1, p2, c }, p1, p2, slab);
-            AssignClipped(new() { p2, p0, c }, p2, p0, slab);
-        }
-    }
-
-    private void PartitionGeneral(List<Point2d> panel, SlabModel slab, List<BeamModel> beamsInSlab)
-    {
-        int n = panel.Count;
-        double cx = panel.Average(v => v.X), cy = panel.Average(v => v.Y);
-        for (int i = 0; i < n; i++)
-            AssignClipped(new() { panel[i], panel[(i + 1) % n], new(cx, cy) }, panel[i], panel[(i + 1) % n], slab);
-    }
-
-    private void Assign(List<Point2d> region, Point2d eA, Point2d eB)
-    {
-        if (region.Count < 3) return;
-        double area = PolygonUtils.Area(region);
-        if (area < 1e-6) return;
-
-        // 辺上の全梁を取得
-        var beams = FindAllBeamsOnEdge(eA, eB);
-        if (beams.Count <= 1)
-        {
-            var beam = beams.Count == 1 ? beams[0] : FindBeam(eA, eB);
-            if (beam != null) { beam.TributaryArea += area; beam.TributaryPolygons.Add(region); }
-            return;
-        }
-
-        // 複数梁：辺方向でソート
-        double edx = eB.X - eA.X, edy = eB.Y - eA.Y;
-        double eLen = Math.Sqrt(edx * edx + edy * edy);
-        if (eLen < 1e-9) return;
-        double enx = edx / eLen, eny = edy / eLen;
-        beams.Sort((a, b) =>
-        {
-            double ta = (a.MidPoint.X - eA.X) * enx + (a.MidPoint.Y - eA.Y) * eny;
-            double tb = (b.MidPoint.X - eA.X) * enx + (b.MidPoint.Y - eA.Y) * eny;
-            return ta.CompareTo(tb);
-        });
-
-        // 梁の接合点で分割
-        var splitPts = new List<Point2d>();
-        for (int i = 0; i < beams.Count - 1; i++)
-        {
-            // 接合点＝beam[i]の端点とbeam[i+1]の端点の中間
-            Point2d bestPt = beams[i].EndPoint;
-            double bestD = double.MaxValue;
-            foreach (var ep in new[] { beams[i].StartPoint, beams[i].EndPoint })
-                foreach (var sp in new[] { beams[i + 1].StartPoint, beams[i + 1].EndPoint })
-                {
-                    double d = Dist(ep, sp);
-                    if (d < bestD) { bestD = d; bestPt = new Point2d((ep.X + sp.X) / 2, (ep.Y + sp.Y) / 2); }
-                }
-            double t = ((bestPt.X - eA.X) * enx + (bestPt.Y - eA.Y) * eny);
-            if (t > eLen * 0.02 && t < eLen * 0.98)
-                splitPts.Add(new Point2d(eA.X + t * enx, eA.Y + t * eny));
-        }
-
-        if (splitPts.Count == 0)
-        {
-            beams[0].TributaryArea += area;
-            beams[0].TributaryPolygons.Add(region);
-            return;
-        }
-
-        // 辺に垂直な線で分割
-        double px = -eny, py = enx;
-        var remaining = new List<Point2d>(region);
-        for (int i = 0; i < splitPts.Count && remaining.Count >= 3; i++)
-        {
-            var sp = splitPts[i];
-            var cutB = new Point2d(sp.X + px, sp.Y + py);
-            var piece = PolygonUtils.ClipByHalfPlane(new List<Point2d>(remaining), sp, cutB, eA);
-            if (piece.Count >= 3)
+            var p = sv[i]; var q = sv[(i + 1) % sv.Count];
+            double ex = q.X - p.X, ey = q.Y - p.Y;
+            double denom = d.X * ey - d.Y * ex;
+            if (Math.Abs(denom) < 1e-10) continue;
+            double t = ((p.X - freeEnd.X) * ey - (p.Y - freeEnd.Y) * ex) / denom;
+            double u = ((p.X - freeEnd.X) * d.Y - (p.Y - freeEnd.Y) * d.X) / denom;
+            if (t > 1e-6 && u >= -1e-6 && u <= 1 + 1e-6 && t < bestT)
             {
-                double pa = PolygonUtils.Area(piece);
-                if (pa > 1e-6) { beams[i].TributaryArea += pa; beams[i].TributaryPolygons.Add(piece); }
+                bestT = t;
+                bestPt = new Point2d(freeEnd.X + t * d.X, freeEnd.Y + t * d.Y);
             }
-            remaining = PolygonUtils.ClipByHalfPlane(remaining, sp, cutB, eB);
-            eA = sp;
         }
-        if (remaining.Count >= 3)
-        {
-            double ra = PolygonUtils.Area(remaining);
-            if (ra > 1e-6) { beams[^1].TributaryArea += ra; beams[^1].TributaryPolygons.Add(remaining); }
-        }
+        return bestPt;
     }
 
-    /// <summary>辺eA→eB上にある全ての梁を返す</summary>
-    private List<BeamModel> FindAllBeamsOnEdge(Point2d eA, Point2d eB)
+    /// <summary>角度を [0, 2π) に正規化</summary>
+    private static double NormalizeAngle(double a)
     {
-        double eLen = Dist(eA, eB); if (eLen < 1e-9) return new();
-        var eDir = new Vector2d((eB.X - eA.X) / eLen, (eB.Y - eA.Y) / eLen);
-        double tol = Math.Max(eLen * 0.2, 0.15);
-        var result = new List<BeamModel>();
-        foreach (var b in _beams)
-        {
-            if (Math.Abs(eDir.X * b.Direction.X + eDir.Y * b.Direction.Y) < 0.8) continue;
-            double ld = PtLineDist(b.MidPoint, eA, eB); if (ld > tol) continue;
-            double t = ((b.MidPoint.X - eA.X) * eDir.X + (b.MidPoint.Y - eA.Y) * eDir.Y) / eLen;
-            if (t > -0.1 && t < 1.1) result.Add(b);
-        }
-        return result;
+        while (a < 0) a += 2 * Math.PI;
+        while (a >= 2 * Math.PI) a -= 2 * Math.PI;
+        return a;
     }
-
-    // ─── ヘルパー ────────────────────────────────────────────
 
     private static double BisAngle(Point2d v, Point2d a1, Point2d a2)
     {
@@ -773,37 +695,18 @@ public class TributaryAreaCalculator
         return a / 2;
     }
 
-    private BeamModel? FindBeam(Point2d eA, Point2d eB)
+    private static bool PointInPolygon(Point2d pt, List<Point2d> polygon)
     {
-        double eL = Dist(eA, eB); if (eL < 1e-9) return null;
-        var eD = new Vector2d((eB.X - eA.X) / eL, (eB.Y - eA.Y) / eL);
-        var eM = new Point2d((eA.X + eB.X) / 2, (eA.Y + eB.Y) / 2);
-        double tol = Math.Max(eL * 0.2, 0.15);
-        BeamModel? best = null; double bs = double.MaxValue;
-        foreach (var b in _beams)
+        bool inside = false;
+        int n = polygon.Count;
+        for (int i = 0, j = n - 1; i < n; j = i++)
         {
-            if (Math.Abs(eD.X * b.Direction.X + eD.Y * b.Direction.Y) < 0.8) continue;
-            double ld = PtLineDist(eM, b.StartPoint, b.EndPoint); if (ld > tol) continue;
-            double sd = PtSegDist(eM, b.StartPoint, b.EndPoint);
-            if (sd < bs) { bs = sd; best = b; }
+            var a = polygon[i]; var b = polygon[j];
+            if ((a.Y > pt.Y) != (b.Y > pt.Y) &&
+                pt.X < (b.X - a.X) * (pt.Y - a.Y) / (b.Y - a.Y) + a.X)
+                inside = !inside;
         }
-        return best;
-    }
-
-    private static List<Point2d> CleanPolygon(List<Point2d> pts)
-    {
-        if (pts.Count < 3) return pts;
-        var r = new List<Point2d> { pts[0] };
-        for (int i = 1; i < pts.Count; i++) if (Dist(pts[i], r[^1]) > 1e-5) r.Add(pts[i]);
-        if (r.Count > 1 && Dist(r[^1], r[0]) < 1e-5) r.RemoveAt(r.Count - 1);
-        var c = new List<Point2d>(); int n = r.Count;
-        for (int i = 0; i < n; i++)
-        {
-            var prev = r[(i - 1 + n) % n]; var cur = r[i]; var next = r[(i + 1) % n];
-            if (Math.Abs((next.X - cur.X) * (prev.Y - cur.Y) - (next.Y - cur.Y) * (prev.X - cur.X)) > 1e-5)
-                c.Add(cur);
-        }
-        return c.Count >= 3 ? c : r;
+        return inside;
     }
 
     private static double Dist(Point2d a, Point2d b)
@@ -817,34 +720,12 @@ public class TributaryAreaCalculator
       double t = Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / l2, 0, 1);
       return Dist(p, new Point2d(a.X + t * dx, a.Y + t * dy)); }
 
-    /// <summary>点がスラブ境界上にあるか判定（200mm許容）</summary>
     private static bool IsOnSlabBoundary(SlabModel slab, Point2d pt)
     {
         var sv = slab.Vertices;
         for (int i = 0; i < sv.Count; i++)
             if (PtSegDist(pt, sv[i], sv[(i + 1) % sv.Count]) < 0.20) return true;
         return false;
-    }
-
-    /// <summary>点からdir方向へレイを飛ばし、スラブ境界との最初の交点を返す</summary>
-    private static Point2d? RaySlabIntersect(SlabModel slab, Point2d origin, Vector2d dir)
-    {
-        var sv = slab.Vertices;
-        Point2d? closest = null; double closestD = double.MaxValue;
-        for (int i = 0; i < sv.Count; i++)
-        {
-            int j = (i + 1) % sv.Count;
-            double d2x = sv[j].X - sv[i].X, d2y = sv[j].Y - sv[i].Y;
-            double den = dir.X * d2y - dir.Y * d2x;
-            if (Math.Abs(den) < 1e-10) continue;
-            double dx = sv[i].X - origin.X, dy = sv[i].Y - origin.Y;
-            double t = (dx * d2y - dy * d2x) / den;
-            double s = (dx * dir.Y - dy * dir.X) / den;
-            if (t < 1e-6 || s < -1e-8 || s > 1 + 1e-8) continue;
-            double d = t;
-            if (d < closestD) { closestD = d; closest = new Point2d(origin.X + t * dir.X, origin.Y + t * dir.Y); }
-        }
-        return closest;
     }
 
     // ════════════════════════════════════════════════════════
