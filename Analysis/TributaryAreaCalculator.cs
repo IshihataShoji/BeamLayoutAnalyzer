@@ -404,69 +404,14 @@ public class TributaryAreaCalculator
 
     /// <summary>
     /// パネルの辺を共有する梁にのみ面積を割り当てる。
-    /// 梁同士が接する角ではおうぎ形分割（二等分線）、
+    /// 梁同士が接する角では亀甲分割（二等分線）、
     /// スラブ境界に接する角では二等分線を引かない。
     /// </summary>
     private void PartitionPanel(List<Point2d> panel, SlabModel slab, List<BeamModel> beamsInSlab)
     {
-        int n = panel.Count;
-        double panelArea = PolygonUtils.Area(panel);
-        if (panelArea < 1e-4) return;
-
-        // 各辺に対応する梁を検索
-        var edgeBeams = new List<(int i, BeamModel beam, double edgeLen)>();
-        double totalBeamEdgeLen = 0;
-
-        for (int i = 0; i < n; i++)
-        {
-            var eA = panel[i];
-            var eB = panel[(i + 1) % n];
-            double edgeLen = Dist(eA, eB);
-
-            // この辺がスラブ境界と一致するかチェック
-            bool isSlabEdge = false;
-            var sv = slab.Vertices;
-            for (int j = 0; j < sv.Count; j++)
-            {
-                var sa = sv[j]; var sb = sv[(j + 1) % sv.Count];
-                if (PtSegDist(eA, sa, sb) < 0.15 && PtSegDist(eB, sa, sb) < 0.15)
-                { isSlabEdge = true; break; }
-            }
-            if (isSlabEdge) continue;
-
-            // この辺上の梁を検索
-            var mid = new Point2d((eA.X + eB.X) / 2, (eA.Y + eB.Y) / 2);
-            BeamModel? foundBeam = null;
-            double bestDist = 0.15;
-            foreach (var beam in beamsInSlab)
-            {
-                double d = PtSegDist(mid, beam.StartPoint, beam.EndPoint);
-                if (d < bestDist) { bestDist = d; foundBeam = beam; }
-            }
-            if (foundBeam != null)
-            {
-                edgeBeams.Add((i, foundBeam, edgeLen));
-                totalBeamEdgeLen += edgeLen;
-            }
-        }
-
-        if (edgeBeams.Count == 0 || totalBeamEdgeLen < 1e-6) return;
-
-        // 面積を各梁に辺の長さ比率で割当（ポリゴンも生成）
-        foreach (var (idx, beam, edgeLen) in edgeBeams)
-        {
-            double share = panelArea * (edgeLen / totalBeamEdgeLen);
-            beam.TributaryArea += share;
-
-            // 視覚化用ポリゴン: パネル全体をスラブでクリップ
-            var region = new List<Point2d>(panel);
-            var center = new Point2d(slab.Vertices.Average(p => p.X), slab.Vertices.Average(p => p.Y));
-            var svs = slab.Vertices;
-            for (int j = 0; j < svs.Count && region.Count >= 3; j++)
-                region = PolygonUtils.ClipByHalfPlane(region, svs[j], svs[(j + 1) % svs.Count], center);
-            if (region.Count >= 3)
-                beam.TributaryPolygons.Add(region);
-        }
+        if (panel.Count == 4) PartitionQuad(panel, slab, beamsInSlab);
+        else if (panel.Count == 3) PartitionTriangle(panel, slab, beamsInSlab);
+        else PartitionGeneral(panel, slab, beamsInSlab);
     }
 
     // ─── 四角形の亀甲分割（LISP準拠）──────────────────────
