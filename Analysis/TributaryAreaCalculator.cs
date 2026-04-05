@@ -143,8 +143,9 @@ public class TributaryAreaCalculator
 
                 if (sharedPt.HasValue)
                 {
-                    // 端点共有 → 角度二等分線
+                    // 端点共有 → 角度二等分線（ただしスラブ境界上ならスキップ）
                     var sp = sharedPt.Value;
+                    if (IsOnSlabBoundary(slab, sp)) continue;
                     double bisAng = BisAngle(sp, beamOther, otherAdj);
                     var bisEnd = Polar(sp, bisAng, 100);
                     poly = PolygonUtils.ClipByHalfPlane(poly, sp, bisEnd, beam.MidPoint);
