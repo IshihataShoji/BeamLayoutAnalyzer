@@ -453,12 +453,29 @@ public partial class FramingPlanWindow : Window
         if (_mode != DisplayMode.Columns) return;
         if (sender is not Ellipse { Tag: ColumnModel col }) return;
 
+        ClearHighlight();
         if (_selectedColumn != null && _colVis.TryGetValue(_selectedColumn, out var prev))
             prev.Fill = ColNormal;
 
         _selectedColumn = col;
         _selectedBeam   = null;
         if (_colVis.TryGetValue(col, out var sel)) sel.Fill = ColSel;
+
+        // ボロノイ領域をハイライト表示
+        if (col.VoronoiPolygon != null && col.VoronoiPolygon.Count >= 3)
+        {
+            var poly = new System.Windows.Shapes.Polygon
+            {
+                Fill             = new SolidColorBrush(Color.FromArgb(100, 100, 180, 255)),
+                Stroke           = new SolidColorBrush(Color.FromArgb(200, 100, 180, 255)),
+                StrokeThickness  = 1.5,
+                IsHitTestVisible = false,
+            };
+            foreach (var v in col.VoronoiPolygon)
+                poly.Points.Add(ToCanvas(v.X, v.Y));
+            DrawingCanvas.Children.Add(poly);
+            _highlightPolys.Add(poly);
+        }
 
         ShowColumnInfo(col);
         e.Handled = true;
