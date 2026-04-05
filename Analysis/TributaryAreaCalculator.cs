@@ -143,6 +143,13 @@ public class TributaryAreaCalculator
                 }
             }
 
+            // 梁ラインでクリップ → マージン側のみ保持（内側の不要な線を除去）
+            if (poly.Count >= 3)
+            {
+                var marginCtr = new Point2d(pts.Average(p => p.X), pts.Average(p => p.Y));
+                poly = PolygonUtils.ClipByHalfPlane(poly, beam.StartPoint, beam.EndPoint, marginCtr);
+            }
+
             if (poly.Count >= 3)
                 beam.TributaryPolygons.Add(poly);
         }
