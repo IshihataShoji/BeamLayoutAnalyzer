@@ -60,16 +60,25 @@ public class TributaryAreaCalculator
     private void AssignMarginByVoronoi(
         SlabModel slab, List<BeamModel> beamsInSlab, List<List<Point2d>> innerPanels)
     {
-        // マージンに面する梁だけを特定
+        // マージンに面する梁だけを特定（梁に沿った複数点でチェック）
         var marginBeams = new List<BeamModel>();
         foreach (var beam in beamsInSlab)
         {
             var normal = new Vector2d(-beam.Direction.Y, beam.Direction.X);
-            var ptA = new Point2d(beam.MidPoint.X + normal.X * 0.3, beam.MidPoint.Y + normal.Y * 0.3);
-            var ptB = new Point2d(beam.MidPoint.X - normal.X * 0.3, beam.MidPoint.Y - normal.Y * 0.3);
-            bool aIn = innerPanels.Any(p => PointInPolygon(ptA, p));
-            bool bIn = innerPanels.Any(p => PointInPolygon(ptB, p));
-            if (!aIn || !bIn) marginBeams.Add(beam);
+            bool hasMarginSide = false;
+            // 始点・中点・終点の3箇所でチェック
+            foreach (var basePt in new[] { beam.StartPoint, beam.MidPoint, beam.EndPoint })
+            {
+                var ptA = new Point2d(basePt.X + normal.X * 0.3, basePt.Y + normal.Y * 0.3);
+                var ptB = new Point2d(basePt.X - normal.X * 0.3, basePt.Y - normal.Y * 0.3);
+                bool aIn = innerPanels.Any(p => PointInPolygon(ptA, p));
+                bool bIn = innerPanels.Any(p => PointInPolygon(ptB, p));
+                // 片側がスラブ内かつパネル外 → マージンに面している
+                bool aIsMargin = !aIn && slab.Contains(ptA);
+                bool bIsMargin = !bIn && slab.Contains(ptB);
+                if (aIsMargin || bIsMargin) { hasMarginSide = true; break; }
+            }
+            if (hasMarginSide) marginBeams.Add(beam);
         }
         if (marginBeams.Count == 0) return;
 
@@ -179,15 +188,23 @@ public class TributaryAreaCalculator
             new List<Point2d>(voronoiCell), beam.StartPoint, beam.EndPoint, sidePt);
         if (half.Count < 3) return;
 
-        var ctr = new Point2d(half.Average(v => v.X), half.Average(v => v.Y));
-        if (innerPanels.Any(p => PointInPolygon(ctr, p))) return;
-
         double area = PolygonUtils.Area(half);
-        if (area > 0.1)
-        {
-            beam.TributaryArea += area;
-            beam.TributaryPolygons.Add(half);
-        }
+        if (area < 0.01) return;
+
+        // 複数点でパネル内チェック（重心とオフセット点）
+        var ctr = new Point2d(half.Average(v => v.X), half.Average(v => v.Y));
+        // 重心からsidePt方向に少しオフセットした点も確認
+        var offPt = new Point2d(
+            ctr.X + (sidePt.X - beam.MidPoint.X) * 0.5,
+            ctr.Y + (sidePt.Y - beam.MidPoint.Y) * 0.5);
+        bool ctrInPanel = innerPanels.Any(p => PointInPolygon(ctr, p));
+        bool offInPanel = innerPanels.Any(p => PointInPolygon(offPt, p));
+
+        // 両点とも内部パネル内なら亀甲で処理済み → スキップ
+        if (ctrInPanel && offInPanel) return;
+
+        beam.TributaryArea += area;
+        beam.TributaryPolygons.Add(half);
     }
 
     private static bool PointInPolygon(Point2d pt, List<Point2d> polygon)
