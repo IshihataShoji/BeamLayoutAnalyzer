@@ -62,11 +62,26 @@ public class TributaryAreaCalculator
     private void AssignMarginByVoronoi(
         SlabModel slab, List<BeamModel> beamsInSlab, List<List<Point2d>> innerPanels)
     {
+        // マージンに面する梁だけを特定
+        var marginBeams = new List<BeamModel>();
         foreach (var beam in beamsInSlab)
         {
-            // 梁中点ベースのボロノイセルを計算
+            var normal = new Vector2d(-beam.Direction.Y, beam.Direction.X);
+            var ptA = new Point2d(beam.MidPoint.X + normal.X * 0.3, beam.MidPoint.Y + normal.Y * 0.3);
+            var ptB = new Point2d(beam.MidPoint.X - normal.X * 0.3, beam.MidPoint.Y - normal.Y * 0.3);
+            bool aInPanel = innerPanels.Any(p => PointInPolygon(ptA, p));
+            bool bInPanel = innerPanels.Any(p => PointInPolygon(ptB, p));
+            // 片側でもマージン（パネル外）に面していればマージン梁
+            if (!aInPanel || !bInPanel)
+                marginBeams.Add(beam);
+        }
+        if (marginBeams.Count == 0) return;
+
+        // マージン梁のみでボロノイ分割
+        foreach (var beam in marginBeams)
+        {
             var cell = new List<Point2d>(slab.Vertices);
-            foreach (var other in beamsInSlab)
+            foreach (var other in marginBeams)
             {
                 if (other == beam || cell.Count == 0) continue;
                 var mid = new Point2d(
@@ -82,12 +97,12 @@ public class TributaryAreaCalculator
             if (cell.Count < 3) continue;
 
             // 梁ラインの両側をチェックし、内部パネルに含まれない側だけを割り当て
-            var normal = new Vector2d(-beam.Direction.Y, beam.Direction.X);
-            var ptA = new Point2d(beam.MidPoint.X + normal.X * 0.1, beam.MidPoint.Y + normal.Y * 0.1);
-            var ptB = new Point2d(beam.MidPoint.X - normal.X * 0.1, beam.MidPoint.Y - normal.Y * 0.1);
+            var normal2 = new Vector2d(-beam.Direction.Y, beam.Direction.X);
+            var ptA2 = new Point2d(beam.MidPoint.X + normal2.X * 0.1, beam.MidPoint.Y + normal2.Y * 0.1);
+            var ptB2 = new Point2d(beam.MidPoint.X - normal2.X * 0.1, beam.MidPoint.Y - normal2.Y * 0.1);
 
-            TryAssignMarginSide(cell, beam, ptA, innerPanels);
-            TryAssignMarginSide(cell, beam, ptB, innerPanels);
+            TryAssignMarginSide(cell, beam, ptA2, innerPanels);
+            TryAssignMarginSide(cell, beam, ptB2, innerPanels);
         }
     }
 
