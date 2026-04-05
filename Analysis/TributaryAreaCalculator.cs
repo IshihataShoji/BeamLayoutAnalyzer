@@ -31,20 +31,21 @@ public class TributaryAreaCalculator
         {
             if (slab.Vertices.Count < 3) continue;
 
+            var beamsInSlab = _beams.Where(b =>
+                slab.Contains(b.MidPoint) || slab.Contains(b.StartPoint) || slab.Contains(b.EndPoint)).ToList();
+
             // ① 梁に囲まれたパネル → 亀甲分割
             var panels = FindPanels(slab);
             foreach (var panel in panels)
             {
                 var clean = CleanPolygon(panel);
                 if (clean.Count < 3 || PolygonUtils.Area(clean) < 1e-4) continue;
-                if (clean.Count == 4) PartitionQuad(clean, slab);
+                if (clean.Count == 4) PartitionQuad(clean, slab, beamsInSlab);
                 else if (clean.Count == 3) PartitionTriangle(clean);
                 else PartitionGeneral(clean);
             }
 
-            // ② マージン領域（梁で囲まれていない部分）→ ボロノイ分割
-            var beamsInSlab = _beams.Where(b =>
-                slab.Contains(b.MidPoint) || slab.Contains(b.StartPoint) || slab.Contains(b.EndPoint)).ToList();
+            // ② マージン領域（梁で囲まれていない部分）→ グリッド分割
             double assignedArea = beamsInSlab.Sum(b => b.TributaryArea);
             if (slab.Area - assignedArea > 0.5)
                 AssignMarginByGrid(slab, beamsInSlab, panels);
@@ -407,85 +408,84 @@ public class TributaryAreaCalculator
 
     // ─── 四角形の亀甲分割（LISP準拠）──────────────────────
 
-    /// <summary>スラブ境界上の角では二等分線を引かない</summary>
-    private bool IsCornerOnSlabBoundary(Point2d pt, SlabModel slab)
+    /// <summary>パネル角が梁/柱のジャンクションか判定（接続されていれば二等分線を引く）</summary>
+    private bool IsCornerAtBeamJunction(Point2d pt, List<BeamModel> beamsInSlab, double tol = 0.15)
     {
-        var sv = slab.Vertices;
-        for (int i = 0; i < sv.Count; i++)
+        // この角に接触している梁の数をカウント
+        int beamCount = 0;
+        foreach (var beam in beamsInSlab)
         {
-            if (PtSegDist(pt, sv[i], sv[(i + 1) % sv.Count]) < 0.15)
-                return true;
+            if (Dist(pt, beam.StartPoint) < tol || Dist(pt, beam.EndPoint) < tol ||
+                PtSegDist(pt, beam.StartPoint, beam.EndPoint) < tol)
+                beamCount++;
         }
-        return false;
+        // 柱に近いか
+        bool nearColumn = _columns.Any(c =>
+            Dist(pt, new Point2d(c.Center.X, c.Center.Y)) < tol + c.Radius);
+        // 2本以上の梁が接触、または梁+柱
+        return beamCount >= 2 || (beamCount >= 1 && nearColumn);
     }
 
-    private void PartitionQuad(List<Point2d> panel, SlabModel slab)
+    private void PartitionQuad(List<Point2d> panel, SlabModel slab, List<BeamModel> beamsInSlab)
     {
         var sorted = panel.OrderByDescending(p => p.Y).ThenBy(p => p.X).ToList();
         var tl = sorted[0]; var tr = sorted[1]; var bl = sorted[2]; var br = sorted[3];
 
-        // スラブ境界上の角を判定
-        bool tlOnBound = IsCornerOnSlabBoundary(tl, slab);
-        bool trOnBound = IsCornerOnSlabBoundary(tr, slab);
-        bool blOnBound = IsCornerOnSlabBoundary(bl, slab);
-        bool brOnBound = IsCornerOnSlabBoundary(br, slab);
-        int boundCount = (tlOnBound?1:0) + (trOnBound?1:0) + (blOnBound?1:0) + (brOnBound?1:0);
+        // 梁/柱に接続されている角を判定
+        bool tlJunction = IsCornerAtBeamJunction(tl, beamsInSlab);
+        bool trJunction = IsCornerAtBeamJunction(tr, beamsInSlab);
+        bool blJunction = IsCornerAtBeamJunction(bl, beamsInSlab);
+        bool brJunction = IsCornerAtBeamJunction(br, beamsInSlab);
 
-        // 全角が内部 → 通常の亀甲分割
-        if (boundCount == 0)
+        // 接続角の二等分線を収集
+        var junctionCorners = new List<(Point2d pt, double bisAng)>();
+        if (tlJunction) junctionCorners.Add((tl, BisAngle(tl, tr, bl)));
+        if (trJunction) junctionCorners.Add((tr, BisAngle(tr, tl, br)));
+        if (blJunction) junctionCorners.Add((bl, BisAngle(bl, tl, br)));
+        if (brJunction) junctionCorners.Add((br, BisAngle(br, bl, tr)));
+
+        // 全角が接続 → 通常の亀甲分割
+        if (junctionCorners.Count == 4)
         {
-            PartitionQuadFull(tl, tr, bl, br);
+            PartitionQuadFull(tl, tr, bl, br, slab);
             return;
         }
 
-        // スラブ境界上の角がある → 内部角のみ二等分線を引く
-        // 内部角の二等分線の交点（skewness point）を求め、
-        // そこからスラブ境界角へ直線でつなぐ
-        var interiorCorners = new List<(Point2d pt, double bisAng)>();
-        if (!tlOnBound) interiorCorners.Add((tl, BisAngle(tl, tr, bl)));
-        if (!trOnBound) interiorCorners.Add((tr, BisAngle(tr, tl, br)));
-        if (!blOnBound) interiorCorners.Add((bl, BisAngle(bl, tl, br)));
-        if (!brOnBound) interiorCorners.Add((br, BisAngle(br, bl, tr)));
-
-        if (interiorCorners.Count >= 2)
+        if (junctionCorners.Count >= 2)
         {
-            // 2つ以上の内部角 → 二等分線の交点を計算
             double ext = Math.Max(Math.Abs(tr.X - tl.X), Math.Abs(tl.Y - bl.Y)) * 2;
-            var c0 = interiorCorners[0];
-            var c1 = interiorCorners[1];
+            var c0 = junctionCorners[0];
+            var c1 = junctionCorners[1];
             var e0 = Polar(c0.pt, c0.bisAng, ext);
             var e1 = Polar(c1.pt, c1.bisAng, ext);
             var sk = LineInter(c0.pt, e0, c1.pt, e1);
             if (!sk.HasValue)
             {
-                PartitionQuadFull(tl, tr, bl, br);
+                PartitionQuadFull(tl, tr, bl, br, slab);
                 return;
             }
             var s = sk.Value;
-            // 各辺→Assignは辺のbeamに面積を割当（beamがない辺はスキップ）
-            Assign(new() { tl, tr, s }, tl, tr);
-            Assign(new() { bl, br, s }, bl, br);
-            Assign(new() { tl, bl, s }, tl, bl);
-            Assign(new() { tr, br, s }, tr, br);
+            AssignClipped(new() { tl, tr, s }, tl, tr, slab);
+            AssignClipped(new() { bl, br, s }, bl, br, slab);
+            AssignClipped(new() { tl, bl, s }, tl, bl, slab);
+            AssignClipped(new() { tr, br, s }, tr, br, slab);
         }
-        else if (interiorCorners.Count == 1)
+        else if (junctionCorners.Count == 1)
         {
-            // 1つだけ内部角 → そこから対角へ直線
-            var c = interiorCorners[0].pt;
-            Assign(new() { tl, tr, c }, tl, tr);
-            Assign(new() { bl, br, c }, bl, br);
-            Assign(new() { tl, bl, c }, tl, bl);
-            Assign(new() { tr, br, c }, tr, br);
+            var c = junctionCorners[0].pt;
+            AssignClipped(new() { tl, tr, c }, tl, tr, slab);
+            AssignClipped(new() { bl, br, c }, bl, br, slab);
+            AssignClipped(new() { tl, bl, c }, tl, bl, slab);
+            AssignClipped(new() { tr, br, c }, tr, br, slab);
         }
         else
         {
-            // 全角がスラブ境界上 → 通常分割にフォールバック
-            PartitionQuadFull(tl, tr, bl, br);
+            PartitionQuadFull(tl, tr, bl, br, slab);
         }
     }
 
-    /// <summary>通常の亀甲分割（全角内部）</summary>
-    private void PartitionQuadFull(Point2d tl, Point2d tr, Point2d bl, Point2d br)
+    /// <summary>通常の亀甲分割（全角が梁/柱接続）</summary>
+    private void PartitionQuadFull(Point2d tl, Point2d tr, Point2d bl, Point2d br, SlabModel slab)
     {
         double bisTL = BisAngle(tl, tr, bl), bisTR = BisAngle(tr, tl, br);
         double bisBL = BisAngle(bl, tl, br), bisBR = BisAngle(br, bl, tr);
@@ -506,7 +506,20 @@ public class TributaryAreaCalculator
             rT = new() { tl, tr, skB.Value, skA.Value }; rB = new() { bl, br, skB.Value, skA.Value };
             rL = new() { tl, bl, skA.Value }; rR = new() { tr, br, skB.Value };
         }
-        Assign(rT, tl, tr); Assign(rB, bl, br); Assign(rL, tl, bl); Assign(rR, tr, br);
+        AssignClipped(rT, tl, tr, slab); AssignClipped(rB, bl, br, slab);
+        AssignClipped(rL, tl, bl, slab); AssignClipped(rR, tr, br, slab);
+    }
+
+    /// <summary>分割ポリゴンをスラブ範囲内にクリップしてからAssign</summary>
+    private void AssignClipped(List<Point2d> region, Point2d eA, Point2d eB, SlabModel slab)
+    {
+        // スラブ境界の各辺でクリップ（スラブ内に収める）
+        var clipped = new List<Point2d>(region);
+        var sv = slab.Vertices;
+        var center = new Point2d(sv.Average(p => p.X), sv.Average(p => p.Y));
+        for (int i = 0; i < sv.Count && clipped.Count >= 3; i++)
+            clipped = PolygonUtils.ClipByHalfPlane(clipped, sv[i], sv[(i + 1) % sv.Count], center);
+        Assign(clipped, eA, eB);
     }
 
     private void PartitionTriangle(List<Point2d> panel)
