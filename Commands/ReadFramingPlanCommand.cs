@@ -81,6 +81,16 @@ public class ReadFramingPlanCommand
         var calc = new TributaryAreaCalculator(slabs, columns, beams);
         calc.Calculate();
 
+        // 診断ログ
+        int matched = beams.Count(b => b.TributaryArea > 0);
+        ed.WriteMessage($"負担面積計算完了: {matched}/{beams.Count} 本の梁に面積割当済み\n");
+        foreach (var b in beams)
+        {
+            ed.WriteMessage($"  梁 L={b.Length:F1}m [{b.Type}] " +
+                            $"面積={b.TributaryArea:F2} m² " +
+                            $"ポリゴン数={b.TributaryPolygons.Count}\n");
+        }
+
         // GUI起動
         var window = new FramingPlanWindow(slabs, columns, beams);
         Application.ShowModalWindow(window);
