@@ -47,169 +47,102 @@ public class TributaryAreaCalculator
                 slab.Contains(b.MidPoint) || slab.Contains(b.StartPoint) || slab.Contains(b.EndPoint)).ToList();
             double assignedArea = beamsInSlab.Sum(b => b.TributaryArea);
             if (slab.Area - assignedArea > 0.5)
-                AssignMarginByVoronoi(slab, beamsInSlab, panels);
+                AssignMarginByGrid(slab, beamsInSlab, panels);
         }
     }
 
-    // ─── マージン領域の分割（梁線分への最短距離ベース）────
+    // ─── マージン領域の分割（グリッドサンプリング方式）────
 
     /// <summary>
     /// 梁に囲まれていないスラブ領域（マージン）を、
     /// 最寄りの梁線分に割り当てる。
+    /// スラブ上にグリッドを敷き、各点が内部パネル外であれば
+    /// 最短距離の梁に面積を割り当てる。
+    /// 内部パネルの亀甲分割には一切影響しない。
     /// </summary>
-    private void AssignMarginByVoronoi(
+    private void AssignMarginByGrid(
         SlabModel slab, List<BeamModel> beamsInSlab, List<List<Point2d>> innerPanels)
     {
-        // マージンに面する梁だけを特定
-        var marginBeams = new List<BeamModel>();
-        foreach (var beam in beamsInSlab)
+        if (beamsInSlab.Count == 0) return;
+
+        double minX = slab.Vertices.Min(v => v.X);
+        double maxX = slab.Vertices.Max(v => v.X);
+        double minY = slab.Vertices.Min(v => v.Y);
+        double maxY = slab.Vertices.Max(v => v.Y);
+
+        double gridSize = 0.1; // 0.1m（10cm）精度
+        double cellArea = gridSize * gridSize;
+
+        var marginAreas = new Dictionary<BeamModel, double>();
+        var marginPoints = new Dictionary<BeamModel, List<Point2d>>();
+
+        for (double x = minX + gridSize / 2; x < maxX; x += gridSize)
         {
-            bool hasMarginSide = false;
-
-            // (A) 法線方向チェック（始点・中点・終点）
-            var normal = new Vector2d(-beam.Direction.Y, beam.Direction.X);
-            foreach (var basePt in new[] { beam.StartPoint, beam.MidPoint, beam.EndPoint })
+            for (double y = minY + gridSize / 2; y < maxY; y += gridSize)
             {
-                var ptA = new Point2d(basePt.X + normal.X * 0.3, basePt.Y + normal.Y * 0.3);
-                var ptB = new Point2d(basePt.X - normal.X * 0.3, basePt.Y - normal.Y * 0.3);
-                if ((!innerPanels.Any(p => PointInPolygon(ptA, p)) && slab.Contains(ptA)) ||
-                    (!innerPanels.Any(p => PointInPolygon(ptB, p)) && slab.Contains(ptB)))
-                { hasMarginSide = true; break; }
-            }
+                var pt = new Point2d(x, y);
+                if (!slab.Contains(pt)) continue;
+                if (innerPanels.Any(p => PointInPolygon(pt, p))) continue;
 
-            // (B) 端点周辺8方向チェック（コーナー検出）
-            if (!hasMarginSide)
-            {
-                foreach (var ep in new[] { beam.StartPoint, beam.EndPoint })
+                BeamModel? nearest = null;
+                double minDist = double.MaxValue;
+                foreach (var beam in beamsInSlab)
                 {
-                    for (int deg = 0; deg < 360; deg += 45)
-                    {
-                        double rad = deg * Math.PI / 180.0;
-                        var testPt = new Point2d(ep.X + Math.Cos(rad) * 0.3, ep.Y + Math.Sin(rad) * 0.3);
-                        if (slab.Contains(testPt) && !innerPanels.Any(p => PointInPolygon(testPt, p)))
-                        { hasMarginSide = true; break; }
-                    }
-                    if (hasMarginSide) break;
+                    double d = PtSegDist(pt, beam.StartPoint, beam.EndPoint);
+                    if (d < minDist) { minDist = d; nearest = beam; }
                 }
-            }
+                if (nearest == null) continue;
 
-            if (hasMarginSide) marginBeams.Add(beam);
+                if (!marginAreas.ContainsKey(nearest))
+                {
+                    marginAreas[nearest] = 0;
+                    marginPoints[nearest] = new List<Point2d>();
+                }
+                marginAreas[nearest] += cellArea;
+                marginPoints[nearest].Add(pt);
+            }
         }
-        if (marginBeams.Count == 0) return;
 
-        const double SHARE_TOL = 0.15;   // 端点共有の判定距離 (m)
-        const double PARALLEL_TOL = 0.1; // 平行判定（|sinθ| < 0.1 ≈ 6°）
-
-        foreach (var beam in marginBeams)
+        foreach (var kvp in marginAreas)
         {
-            // 初期セル = スラブ全体
-            var cell = new List<Point2d>(slab.Vertices);
+            if (kvp.Value < 0.01) continue;
+            kvp.Key.TributaryArea += kvp.Value;
 
-            foreach (var other in marginBeams)
+            var pts = marginPoints[kvp.Key];
+            if (pts.Count >= 3)
             {
-                if (other == beam || cell.Count == 0) continue;
-
-                // ── 端点を共有するか判定 ──
-                Point2d? sharedPt = null;
-                Point2d beamOther = beam.EndPoint, otherAdj = other.EndPoint;
-                if (Dist(beam.StartPoint, other.StartPoint) < SHARE_TOL)
-                    { sharedPt = beam.StartPoint; beamOther = beam.EndPoint; otherAdj = other.EndPoint; }
-                else if (Dist(beam.StartPoint, other.EndPoint) < SHARE_TOL)
-                    { sharedPt = beam.StartPoint; beamOther = beam.EndPoint; otherAdj = other.StartPoint; }
-                else if (Dist(beam.EndPoint, other.StartPoint) < SHARE_TOL)
-                    { sharedPt = beam.EndPoint; beamOther = beam.StartPoint; otherAdj = other.EndPoint; }
-                else if (Dist(beam.EndPoint, other.EndPoint) < SHARE_TOL)
-                    { sharedPt = beam.EndPoint; beamOther = beam.StartPoint; otherAdj = other.StartPoint; }
-
-                if (sharedPt.HasValue)
-                {
-                    // ケース1: 端点共有 → 角度二等分線でクリップ
-                    var sp = sharedPt.Value;
-                    double bisAng = BisAngle(sp, beamOther, otherAdj);
-                    var bisEnd = Polar(sp, bisAng, 100);
-                    cell = PolygonUtils.ClipByHalfPlane(cell, sp, bisEnd, beam.MidPoint);
-                }
-                else
-                {
-                    // ── 平行かどうか判定 ──
-                    double cross = Math.Abs(beam.Direction.X * other.Direction.Y
-                                          - beam.Direction.Y * other.Direction.X);
-                    if (cross < PARALLEL_TOL)
-                    {
-                        // ケース2: 平行 → 中間線でクリップ
-                        var mid = new Point2d(
-                            (beam.MidPoint.X + other.MidPoint.X) / 2,
-                            (beam.MidPoint.Y + other.MidPoint.Y) / 2);
-                        // 梁方向に平行な線で分割
-                        var lineEnd = new Point2d(
-                            mid.X + beam.Direction.X, mid.Y + beam.Direction.Y);
-                        cell = PolygonUtils.ClipByHalfPlane(cell, mid, lineEnd, beam.MidPoint);
-                    }
-                    else
-                    {
-                        // ケース3: その他 → 最近接点ペアの垂直二等分線
-                        var (cpB, cpO) = ClosestPointPair(beam, other);
-                        var mid = new Point2d((cpB.X + cpO.X) / 2, (cpB.Y + cpO.Y) / 2);
-                        var diff = new Vector2d(cpO.X - cpB.X, cpO.Y - cpB.Y);
-                        var perp = new Vector2d(-diff.Y, diff.X);
-                        cell = PolygonUtils.ClipByHalfPlane(cell, mid,
-                            new Point2d(mid.X + perp.X, mid.Y + perp.Y), beam.MidPoint);
-                    }
-                }
-            }
-            // ボロノイセルから内部パネル重複面積を差し引き、マージン面積を算出
-            double voronoiArea = PolygonUtils.Area(cell);
-            double innerOverlap = 0;
-            foreach (var panel in innerPanels)
-            {
-                var intersection = ClipToPolygon(cell, panel);
-                if (intersection.Count >= 3)
-                    innerOverlap += PolygonUtils.Area(intersection);
-            }
-            double marginArea = voronoiArea - innerOverlap;
-            if (marginArea > 0.01)
-            {
-                beam.TributaryArea += marginArea;
-                beam.TributaryPolygons.Add(cell);
+                var hull = ConvexHull(pts);
+                if (hull.Count >= 3)
+                    kvp.Key.TributaryPolygons.Add(hull);
             }
         }
     }
 
-    /// <summary>subjectポリゴンをclipポリゴンの内側に切り抜く（交差部分を返す）</summary>
-    private static List<Point2d> ClipToPolygon(List<Point2d> subject, List<Point2d> clip)
+    private static List<Point2d> ConvexHull(List<Point2d> points)
     {
-        var result = new List<Point2d>(subject);
-        int n = clip.Count;
-        var centroid = new Point2d(clip.Average(p => p.X), clip.Average(p => p.Y));
-        for (int i = 0; i < n && result.Count >= 3; i++)
-            result = PolygonUtils.ClipByHalfPlane(result, clip[i], clip[(i + 1) % n], centroid);
-        return result;
+        var pts = points.OrderBy(p => p.X).ThenBy(p => p.Y).ToList();
+        int n = pts.Count;
+        if (n < 3) return new List<Point2d>(pts);
+        var hull = new List<Point2d>();
+        foreach (var p in pts)
+        {
+            while (hull.Count >= 2 && CrossProduct(hull[hull.Count - 2], hull[hull.Count - 1], p) <= 0)
+                hull.RemoveAt(hull.Count - 1);
+            hull.Add(p);
+        }
+        int lower = hull.Count + 1;
+        for (int i = n - 2; i >= 0; i--)
+        {
+            while (hull.Count >= lower && CrossProduct(hull[hull.Count - 2], hull[hull.Count - 1], pts[i]) <= 0)
+                hull.RemoveAt(hull.Count - 1);
+            hull.Add(pts[i]);
+        }
+        hull.RemoveAt(hull.Count - 1);
+        return hull;
     }
 
-    /// <summary>2つの梁線分の最近接点ペアを求める</summary>
-    private static (Point2d onA, Point2d onB) ClosestPointPair(BeamModel a, BeamModel b)
-    {
-        var candidates = new List<(Point2d pA, Point2d pB, double d)>();
-        candidates.Add((a.StartPoint, ClosestOnSeg(a.StartPoint, b.StartPoint, b.EndPoint),
-            PtSegDist(a.StartPoint, b.StartPoint, b.EndPoint)));
-        candidates.Add((a.EndPoint, ClosestOnSeg(a.EndPoint, b.StartPoint, b.EndPoint),
-            PtSegDist(a.EndPoint, b.StartPoint, b.EndPoint)));
-        candidates.Add((ClosestOnSeg(b.StartPoint, a.StartPoint, a.EndPoint), b.StartPoint,
-            PtSegDist(b.StartPoint, a.StartPoint, a.EndPoint)));
-        candidates.Add((ClosestOnSeg(b.EndPoint, a.StartPoint, a.EndPoint), b.EndPoint,
-            PtSegDist(b.EndPoint, a.StartPoint, a.EndPoint)));
-        var best = candidates.OrderBy(c => c.d).First();
-        return (best.pA, best.pB);
-    }
-
-    /// <summary>点pから線分ab上の最近接点を返す</summary>
-    private static Point2d ClosestOnSeg(Point2d p, Point2d a, Point2d b)
-    {
-        double dx = b.X - a.X, dy = b.Y - a.Y, l2 = dx * dx + dy * dy;
-        if (l2 < 1e-20) return a;
-        double t = Math.Clamp(((p.X - a.X) * dx + (p.Y - a.Y) * dy) / l2, 0, 1);
-        return new Point2d(a.X + t * dx, a.Y + t * dy);
-    }
+    private static double CrossProduct(Point2d o, Point2d a, Point2d b)
+        => (a.X - o.X) * (b.Y - o.Y) - (a.Y - o.Y) * (b.X - o.X);
 
     private static bool PointInPolygon(Point2d pt, List<Point2d> polygon)
     {
