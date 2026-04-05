@@ -148,7 +148,7 @@ public partial class FramingPlanWindow : Window
             double cx = s.Vertices.Average(v => v.X);
             double cy = s.Vertices.Average(v => v.Y);
             var cp = ToCanvas(cx, cy);
-            string txt = $"面積\n{s.Area:F1} m²\n地震力\n{s.Area * k:F1} kN";
+            string txt = $"面積\n{s.Area:F5} m²\n地震力\n{s.Area * k:F5} kN";
             AddLabel(cp.X, cp.Y, txt, Color.FromRgb(255, 220, 80), centerX: true);
         }
 
@@ -236,7 +236,7 @@ public partial class FramingPlanWindow : Window
             double angle = b.Angle;
             double ox = -Math.Sin(angle) * 14;
             double oy =  Math.Cos(angle) * 14;
-            string txt  = $"{b.TributaryArea:F1} m²\n{b.TributaryArea * k:F1} kN";
+            string txt  = $"{b.TributaryArea:F5} m²\n{b.TributaryArea * k:F5} kN";
             var color   = b.Type == BeamType.大梁
                 ? Color.FromRgb(255, 230, 80)
                 : Color.FromRgb(255, 195, 100);
@@ -290,7 +290,7 @@ public partial class FramingPlanWindow : Window
         {
             var cp = ToCanvas(c.Center.X, c.Center.Y);
             double r = Math.Max(c.Radius * _scale, 5);
-            string txt = $"{c.TributaryArea:F1} m²\n{c.TributaryArea * colK:F1} kN";
+            string txt = $"{c.TributaryArea:F5} m²\n{c.TributaryArea * colK:F5} kN";
             AddLabel(cp.X, cp.Y - r - 28, txt, Color.FromRgb(100, 210, 255), centerX: true);
         }
     }
@@ -389,11 +389,11 @@ public partial class FramingPlanWindow : Window
             Padding         = new Thickness(4, 2, 4, 2),
             IsHitTestVisible= false,
         };
-        // 幅を固定してセンタリング
-        double labelW = 64;
+        // 自動幅でセンタリング
+        border.Measure(new System.Windows.Size(double.PositiveInfinity, double.PositiveInfinity));
+        double labelW = border.DesiredSize.Width;
         Canvas.SetLeft(border, centerX ? x - labelW / 2 : x);
         Canvas.SetTop( border, y);
-        border.Width = labelW;
         DrawingCanvas.Children.Add(border);
     }
 
@@ -495,11 +495,11 @@ public partial class FramingPlanWindow : Window
         InfoRow("始点 Y",    $"{beam.StartPoint.Y:F3} m");
         InfoRow("終点 X",    $"{beam.EndPoint.X:F3} m");
         InfoRow("終点 Y",    $"{beam.EndPoint.Y:F3} m");
-        InfoRow("支配面積",  $"{beam.TributaryArea:F2} m²");
-        InfoRow("荷重定数",  $"{k:F2} kN/m²");
+        InfoRow("支配面積",  $"{beam.TributaryArea:F5} m²");
+        InfoRow("荷重定数",  $"{k:F5} kN/m²");
         InfoSep();
         string label = beam.Type == BeamType.大梁 ? "大梁積載荷重" : "小梁積載荷重";
-        InfoRow(label, $"{load:F2} kN",
+        InfoRow(label, $"{load:F5} kN",
                 valueColor: Color.FromRgb(100, 255, 150), bold: true);
     }
 
@@ -513,10 +513,10 @@ public partial class FramingPlanWindow : Window
         InfoRow("中心 X",   $"{col.Center.X:F3} m");
         InfoRow("中心 Y",   $"{col.Center.Y:F3} m");
         InfoRow("半径",     $"{col.Radius:F3} m");
-        InfoRow("支配面積", $"{col.TributaryArea:F2} m²");
-        InfoRow("荷重定数", $"{k:F2} kN/m²");
+        InfoRow("支配面積", $"{col.TributaryArea:F5} m²");
+        InfoRow("荷重定数", $"{k:F5} kN/m²");
         InfoSep();
-        InfoRow("柱積載荷重", $"{load:F2} kN",
+        InfoRow("柱積載荷重", $"{load:F5} kN",
                 valueColor: Color.FromRgb(100, 255, 150), bold: true);
     }
 
@@ -570,11 +570,11 @@ public partial class FramingPlanWindow : Window
         double subLoad     = _beams.Where(b => b.Type == BeamType.小梁).Sum(b => b.TributaryArea * subK);
         double colLoad     = _columns.Sum(c => c.TributaryArea * colK);
 
-        SumRow("スラブ総面積",       $"{totalSlab:F1} m²");
-        SumRow("地震力積載荷重",     $"{seismicLoad:F1} kN",  Color.FromRgb(255, 220, 80));
-        SumRow("大梁積載荷重 合計",  $"{mainLoad:F1} kN",     Color.FromRgb(255, 215,  0));
-        SumRow("小梁積載荷重 合計",  $"{subLoad:F1} kN",      Color.FromRgb(255, 180, 60));
-        SumRow("柱積載荷重 合計",    $"{colLoad:F1} kN",      Color.FromRgb( 60, 180, 255));
+        SumRow("スラブ総面積",       $"{totalSlab:F5} m²");
+        SumRow("地震力積載荷重",     $"{seismicLoad:F5} kN",  Color.FromRgb(255, 220, 80));
+        SumRow("大梁積載荷重 合計",  $"{mainLoad:F5} kN",     Color.FromRgb(255, 215,  0));
+        SumRow("小梁積載荷重 合計",  $"{subLoad:F5} kN",      Color.FromRgb(255, 180, 60));
+        SumRow("柱積載荷重 合計",    $"{colLoad:F5} kN",      Color.FromRgb( 60, 180, 255));
     }
 
     private void SumRow(string label, string value, Color? valueColor = null)
