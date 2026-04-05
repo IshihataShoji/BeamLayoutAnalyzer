@@ -103,18 +103,48 @@ public class TributaryAreaCalculator
             }
         }
 
+        const double SHARE_TOL = 0.15;
+
         foreach (var kvp in marginAreas)
         {
             if (kvp.Value < 0.01) continue;
             kvp.Key.TributaryArea += kvp.Value;
 
-            var pts = marginPoints[kvp.Key];
-            if (pts.Count >= 3)
+            var beam = kvp.Key;
+            var pts = marginPoints[beam];
+            if (pts.Count < 3) continue;
+
+            var poly = ConvexHull(pts);
+            if (poly.Count < 3) continue;
+
+            // 隣接梁との角度二等分線でクリップ → 直線的な分割線
+            foreach (var other in beamsInSlab)
             {
-                var hull = ConvexHull(pts);
-                if (hull.Count >= 3)
-                    kvp.Key.TributaryPolygons.Add(hull);
+                if (other == beam || poly.Count < 3) continue;
+                if (!marginAreas.ContainsKey(other)) continue;
+
+                Point2d? sharedPt = null;
+                Point2d beamOther = beam.EndPoint, otherAdj = other.EndPoint;
+                if (Dist(beam.StartPoint, other.StartPoint) < SHARE_TOL)
+                    { sharedPt = beam.StartPoint; beamOther = beam.EndPoint; otherAdj = other.EndPoint; }
+                else if (Dist(beam.StartPoint, other.EndPoint) < SHARE_TOL)
+                    { sharedPt = beam.StartPoint; beamOther = beam.EndPoint; otherAdj = other.StartPoint; }
+                else if (Dist(beam.EndPoint, other.StartPoint) < SHARE_TOL)
+                    { sharedPt = beam.EndPoint; beamOther = beam.StartPoint; otherAdj = other.EndPoint; }
+                else if (Dist(beam.EndPoint, other.EndPoint) < SHARE_TOL)
+                    { sharedPt = beam.EndPoint; beamOther = beam.StartPoint; otherAdj = other.StartPoint; }
+
+                if (sharedPt.HasValue)
+                {
+                    var sp = sharedPt.Value;
+                    double bisAng = BisAngle(sp, beamOther, otherAdj);
+                    var bisEnd = Polar(sp, bisAng, 100);
+                    poly = PolygonUtils.ClipByHalfPlane(poly, sp, bisEnd, beam.MidPoint);
+                }
             }
+
+            if (poly.Count >= 3)
+                beam.TributaryPolygons.Add(poly);
         }
     }
 
