@@ -114,15 +114,21 @@ public class TributaryAreaCalculator
             var pts = marginPoints[beam];
             if (pts.Count < 3) continue;
 
-            var poly = ConvexHull(pts);
+            // スラブポリゴンから出発（角がスラブ境界と正確に一致）
+            var poly = new List<Point2d>(slab.Vertices);
+
+            // 梁ラインでクリップ → マージン側のみ保持
+            var marginCtr = new Point2d(pts.Average(p => p.X), pts.Average(p => p.Y));
+            poly = PolygonUtils.ClipByHalfPlane(poly, beam.StartPoint, beam.EndPoint, marginCtr);
             if (poly.Count < 3) continue;
 
-            // 隣接梁との角度二等分線でクリップ → 直線的な分割線
+            // 他のマージン梁との分割線でクリップ
             foreach (var other in beamsInSlab)
             {
                 if (other == beam || poly.Count < 3) continue;
                 if (!marginAreas.ContainsKey(other)) continue;
 
+                // 端点共有判定
                 Point2d? sharedPt = null;
                 Point2d beamOther = beam.EndPoint, otherAdj = other.EndPoint;
                 if (Dist(beam.StartPoint, other.StartPoint) < SHARE_TOL)
@@ -136,18 +142,25 @@ public class TributaryAreaCalculator
 
                 if (sharedPt.HasValue)
                 {
+                    // 端点共有 → 角度二等分線
                     var sp = sharedPt.Value;
                     double bisAng = BisAngle(sp, beamOther, otherAdj);
                     var bisEnd = Polar(sp, bisAng, 100);
                     poly = PolygonUtils.ClipByHalfPlane(poly, sp, bisEnd, beam.MidPoint);
                 }
-            }
-
-            // 梁ラインでクリップ → マージン側のみ保持（内側の不要な線を除去）
-            if (poly.Count >= 3)
-            {
-                var marginCtr = new Point2d(pts.Average(p => p.X), pts.Average(p => p.Y));
-                poly = PolygonUtils.ClipByHalfPlane(poly, beam.StartPoint, beam.EndPoint, marginCtr);
+                else
+                {
+                    // 非共有 → 中点間の垂直二等分線
+                    var mid = new Point2d(
+                        (beam.MidPoint.X + other.MidPoint.X) / 2,
+                        (beam.MidPoint.Y + other.MidPoint.Y) / 2);
+                    var diff = new Vector2d(
+                        other.MidPoint.X - beam.MidPoint.X,
+                        other.MidPoint.Y - beam.MidPoint.Y);
+                    var perp = new Vector2d(-diff.Y, diff.X);
+                    poly = PolygonUtils.ClipByHalfPlane(poly, mid,
+                        new Point2d(mid.X + perp.X, mid.Y + perp.Y), beam.MidPoint);
+                }
             }
 
             if (poly.Count >= 3)
