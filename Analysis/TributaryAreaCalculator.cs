@@ -243,6 +243,38 @@ public class TributaryAreaCalculator
     }
     // ─── 平面グラフの面列挙 ─────────────────────────────────
 
+    /// <summary>自由端を梁方向にスラブ境界まで延長した点を返す</summary>
+    private static Point2d ExtendToSlabBoundary(Point2d freeEnd, Point2d connectedEnd, SlabModel slab)
+    {
+        // 梁の方向: connectedEnd → freeEnd
+        var dir = new Vector2d(freeEnd.X - connectedEnd.X, freeEnd.Y - connectedEnd.Y);
+        double len = Math.Sqrt(dir.X * dir.X + dir.Y * dir.Y);
+        if (len < 1e-10) return freeEnd;
+        var d = new Vector2d(dir.X / len, dir.Y / len);
+
+        // freeEnd から方向 d に沿ってスラブ境界との交点を求める
+        var sv = slab.Vertices;
+        double bestT = double.MaxValue;
+        Point2d bestPt = freeEnd;
+        for (int i = 0; i < sv.Count; i++)
+        {
+            var p = sv[i];
+            var q = sv[(i + 1) % sv.Count];
+            // Ray: freeEnd + t * d  と  線分 p-q の交点を求める
+            double ex = q.X - p.X, ey = q.Y - p.Y;
+            double denom = d.X * ey - d.Y * ex;
+            if (Math.Abs(denom) < 1e-10) continue;
+            double t = ((p.X - freeEnd.X) * ey - (p.Y - freeEnd.Y) * ex) / denom;
+            double u = ((p.X - freeEnd.X) * d.Y - (p.Y - freeEnd.Y) * d.X) / denom;
+            if (t > 1e-6 && u >= -1e-6 && u <= 1 + 1e-6 && t < bestT)
+            {
+                bestT = t;
+                bestPt = new Point2d(freeEnd.X + t * d.X, freeEnd.Y + t * d.Y);
+            }
+        }
+        return bestPt;
+    }
+
     /// <summary>
     /// スラブ境界+梁の線分で平面グラフを構築し、
     /// 梁で囲まれた閉じた領域（サブパネル）を全て列挙する。
@@ -257,15 +289,23 @@ public class TributaryAreaCalculator
         var beamsInSlab = _beams.Where(b =>
             slab.Contains(b.MidPoint) || slab.Contains(b.StartPoint) || slab.Contains(b.EndPoint)).ToList();
 
-        // 両端が接続されている梁のみ面列挙に含める（浮いた梁は除外）
-        const double CONN_TOL = 0.15; // 接続判定距離 (m)
+        // 全梁を面列挙に含める（浮いた梁は自由端をスラブ境界まで延長）
+        const double CONN_TOL = 0.15;
         foreach (var b in beamsInSlab)
         {
             bool startOk = IsEndpointConnected(b.StartPoint, b, beamsInSlab, slab, CONN_TOL);
             bool endOk   = IsEndpointConnected(b.EndPoint, b, beamsInSlab, slab, CONN_TOL);
-            if (startOk && endOk)
-                segs.Add((b.StartPoint, b.EndPoint));
-            // 浮いた梁は面列挙に含めない（グリッドサンプリングで面積割当）
+
+            var segStart = b.StartPoint;
+            var segEnd   = b.EndPoint;
+
+            // 自由端をスラブ境界まで延長
+            if (!startOk)
+                segStart = ExtendToSlabBoundary(b.StartPoint, b.EndPoint, slab);
+            if (!endOk)
+                segEnd = ExtendToSlabBoundary(b.EndPoint, b.StartPoint, slab);
+
+            segs.Add((segStart, segEnd));
         }
 
 
