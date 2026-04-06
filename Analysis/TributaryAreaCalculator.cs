@@ -32,7 +32,8 @@ public class TributaryAreaCalculator
             if (slab.Vertices.Count < 3) continue;
 
             var beamsInSlab = _beams.Where(b =>
-                slab.Contains(b.MidPoint) || slab.Contains(b.StartPoint) || slab.Contains(b.EndPoint)).ToList();
+                slab.Contains(b.MidPoint) || slab.Contains(b.StartPoint) || slab.Contains(b.EndPoint)
+                || IsOnSlabBoundary(slab, b.MidPoint)).ToList();
 
             // ── Step 1: ベース線分を収集（スラブ境界 + 梁 + 浮き梁延長）──
             var baseSegs = CollectBaseSegments(slab, beamsInSlab);
@@ -110,6 +111,7 @@ public class TributaryAreaCalculator
         List<BeamModel> beamsInSlab)
     {
         const double TOL = 0.15;
+        const double DIST_TOL = 0.0009; // 0.9mm: 分割線交点の最小距離
         var bisectors = new List<(Point2d a, Point2d b)>();
 
         // ── 全節点を収集（線分端点＝スラブ角・柱・梁端点）──
@@ -162,16 +164,20 @@ public class TributaryAreaCalculator
             // ルール: 柱→引く、梁端点2以上→引く、梁端点共有+梁線分上→引く、それ以外→引かない
             if (!isColumn && beamEndpointCount < 2 && !endpointOnBeamLine)
             {
-                // logMsg($"[SKIP] ({node.X:F3},{node.Y:F3}) col={isColumn} ep={beamEndpointCount} onLine={endpointOnBeamLine}");
+                logMsg($"[SKIP] ({node.X:F3},{node.Y:F3}) col={isColumn} ep={beamEndpointCount} onLine={endpointOnBeamLine}");
                 continue;
             }
-            // logMsg($"[GEN]  ({node.X:F3},{node.Y:F3}) col={isColumn} ep={beamEndpointCount} onLine={endpointOnBeamLine}");
+            logMsg($"[GEN]  ({node.X:F3},{node.Y:F3}) col={isColumn} ep={beamEndpointCount} onLine={endpointOnBeamLine}");
 
             // この節点を端点としている線分を全て走査し角度を収集（0～2π）
             var edgeAngles = new List<double>();
+            int slabEdgeCount = slab.Vertices.Count;
             int segIdx = 0;
             foreach (var seg in segs)
             {
+                // スラブ境界線は角度評価に含めない
+                if (segIdx < slabEdgeCount) { segIdx++; continue; }
+
                 double distA = Dist(node, seg.a);
                 double distB = Dist(node, seg.b);
                 double distSeg = PtSegDist(node, seg.a, seg.b);
@@ -184,7 +190,7 @@ public class TributaryAreaCalculator
                     {
                         double ang = NormalizeAngle(Math.Atan2(dy, dx));
                         edgeAngles.Add(ang);
-                        // logMsg($"  seg{segIdx}: EP-A dist={distA:F3} -> {ang * 180 / Math.PI:F1} deg");
+                        logMsg($"  seg{segIdx}: EP-A dist={distA:F3} -> {ang * 180 / Math.PI:F1} deg");
                     }
                 }
                 else if (distB < TOL)
@@ -194,7 +200,7 @@ public class TributaryAreaCalculator
                     {
                         double ang = NormalizeAngle(Math.Atan2(dy, dx));
                         edgeAngles.Add(ang);
-                        // logMsg($"  seg{segIdx}: EP-B dist={distB:F3} -> {ang * 180 / Math.PI:F1} deg");
+                        logMsg($"  seg{segIdx}: EP-B dist={distB:F3} -> {ang * 180 / Math.PI:F1} deg");
                     }
                 }
                 else if (distSeg < TOL)
@@ -206,7 +212,7 @@ public class TributaryAreaCalculator
                         edgeAngles.Add(NormalizeAngle(Math.Atan2(dy1, dx1)));
                     if (Math.Sqrt(dx2 * dx2 + dy2 * dy2) > 1e-6)
                         edgeAngles.Add(NormalizeAngle(Math.Atan2(dy2, dx2)));
-                    // logMsg($"  seg{segIdx}: T-JCT distSeg={distSeg:F3}");
+                    logMsg($"  seg{segIdx}: T-JCT distSeg={distSeg:F3}");
                 }
                 else
                 {
@@ -217,7 +223,7 @@ public class TributaryAreaCalculator
 
             if (edgeAngles.Count < 2)
             {
-                // logMsg($"  => edges={edgeAngles.Count} SKIP(too few)");
+                logMsg($"  => edges={edgeAngles.Count} SKIP(too few)");
                 continue;
             }
 
@@ -232,10 +238,10 @@ public class TributaryAreaCalculator
             edgeAngles = unique;
             if (edgeAngles.Count < 2)
             {
-                // logMsg($"  => unique={edgeAngles.Count} SKIP(after dedup)");
+                logMsg($"  => unique={edgeAngles.Count} SKIP(after dedup)");
                 continue;
             }
-            // logMsg($"  => edges={edgeAngles.Count} angles=[{string.Join(", ", edgeAngles.Select(a => $"{a * 180 / Math.PI:F1}"))}]");
+            logMsg($"  => edges={edgeAngles.Count} angles=[{string.Join(", ", edgeAngles.Select(a => $"{a * 180 / Math.PI:F1}"))}]");
 
             int N = edgeAngles.Count;
 
@@ -335,7 +341,7 @@ public class TributaryAreaCalculator
                     if (cross.HasValue)
                     {
                         double d = Dist(origin, cross.Value);
-                        if (d > TOL && d < bestDist)
+                        if (d > DIST_TOL && d < bestDist)
                         {
                             bestDist = d;
                             bestEnd = cross.Value;
@@ -358,7 +364,7 @@ public class TributaryAreaCalculator
                     if (cross.HasValue)
                     {
                         double d = Dist(origin, cross.Value);
-                        if (d > TOL && d < bestDist)
+                        if (d > DIST_TOL && d < bestDist)
                         {
                             bestDist = d;
                             bestEnd = cross.Value;
@@ -435,6 +441,7 @@ public class TributaryAreaCalculator
         List<List<Point2d>> basePanels)
     {
         const double TOL = 0.15;
+        const double DIST_TOL = 0.0009; // 0.9mm: 交点の重複除去距離
         var freeEnds = new List<(Point2d pt, int panelIdx)>();
 
         for (int bi = 0; bi < bisectors.Count; bi++)
@@ -461,7 +468,7 @@ public class TributaryAreaCalculator
             var pts = new List<Point2d> { rawPts[0] };
             for (int i = 1; i < rawPts.Count; i++)
             {
-                if (!pts.Any(p => Dist(p, rawPts[i]) < TOL))
+                if (!pts.Any(p => Dist(p, rawPts[i]) < DIST_TOL))
                     pts.Add(rawPts[i]);
             }
 
