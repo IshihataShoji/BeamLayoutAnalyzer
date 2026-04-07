@@ -18,7 +18,8 @@ namespace BeamLayoutAnalyzer.Commands;
 /// </summary>
 public class ReadFramingPlanCommand
 {
-    [CommandMethod("FRAMINGPLAN", CommandFlags.Modal)]
+    // [CommandMethod] はローダー (BeamLayoutLoader) 側で登録するため、ここでは不要
+    // リフレクション経由で Loader.cs から呼び出される
     public void Execute()
     {
         var doc = Application.DocumentManager.MdiActiveDocument;

@@ -742,7 +742,16 @@ public class TributaryAreaCalculator
     { foreach (var c in _columns) c.TributaryArea = CalcVoronoi(c); }
     private double CalcVoronoi(ColumnModel tgt)
     {
+        // まずスラブ内部判定（境界上の柱も含む）
         var slab = _slabs.FirstOrDefault(s => s.Contains(tgt.Center));
+
+        // 境界上の柱は Contains() が false になることがあるため、
+        // 境界への距離でも判定する
+        if (slab == null)
+        {
+            slab = _slabs.FirstOrDefault(s => IsOnOrInsideSlab(s, tgt.Center));
+        }
+
         if (slab == null) return 0;
         var cell = new List<Point2d>(slab.Vertices);
         foreach (var o in _columns)
@@ -753,5 +762,26 @@ public class TributaryAreaCalculator
             cell = PolygonUtils.ClipByHalfPlane(cell, m, new Point2d(m.X - d.Y, m.Y + d.X), tgt.Center);
         }
         tgt.VoronoiPolygon = cell; return PolygonUtils.Area(cell);
+    }
+
+    /// <summary>
+    /// 点がスラブ内部または境界上（許容誤差内）にあるか判定する。
+    /// レイキャスティング法では境界上の点を正しく判定できないため、
+    /// 各辺への距離も併用する。
+    /// </summary>
+    private static bool IsOnOrInsideSlab(SlabModel slab, Point2d pt)
+    {
+        // 内部判定
+        if (slab.Contains(pt)) return true;
+
+        // 境界上判定: スラブの各辺への距離が許容誤差以内なら境界上と見なす
+        const double BOUNDARY_TOL = 0.20; // 20cm
+        var sv = slab.Vertices;
+        for (int i = 0; i < sv.Count; i++)
+        {
+            if (PtSegDist(pt, sv[i], sv[(i + 1) % sv.Count]) < BOUNDARY_TOL)
+                return true;
+        }
+        return false;
     }
 }

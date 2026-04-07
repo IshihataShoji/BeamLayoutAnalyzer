@@ -9,6 +9,9 @@
     <RootNamespace>BeamLayoutAnalyzer</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- ローダーと同じ出力フォルダに配置 -->
+    <OutputPath>..\BeamLayoutOutput\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
   </PropertyGroup>
 
   <ItemGroup>

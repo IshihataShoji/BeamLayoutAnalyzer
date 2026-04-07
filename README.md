@@ -72,10 +72,12 @@ BeamLayoutAnalyzer/
 
 ### 1. ビルド
 
-Visual Studio 2022 でソリューションを開き、ビルドします。
+Visual Studio 2022 でソリューションを開き、両プロジェクトをビルドします。
 
 ```
-ビルド出力: bin\Debug\net8.0-windows\BeamLayoutAnalyzer.dll
+ビルド出力: ..\BeamLayoutOutput\
+  ├── BeamLayoutLoader.dll      ← AutoCAD にロードするDLL
+  └── BeamLayoutAnalyzer.dll    ← 本体（シャドウコピーで動的ロード）
 ```
 
 > **注意**: AutoCAD 2026 の DLL 参照パスがデフォルトで `C:\Program Files\Autodesk\AutoCAD 2026\` に設定されています。環境に合わせて `.csproj` を修正してください。
@@ -88,13 +90,25 @@ AutoCAD 2026 のコマンドラインで：
 NETLOAD
 ```
 
-→ `BeamLayoutAnalyzer.dll` を選択して読み込みます。
+→ **`BeamLayoutLoader.dll`** を選択して読み込みます（BeamLayoutAnalyzer.dll ではありません）。
 
 ### 3. コマンド実行
 
 ```
 FRAMINGPLAN
 ```
+
+### 3.5 コードを修正した場合（シャドウコピー再ロード）
+
+コード修正後、Visual Studio でリビルドしたら：
+
+```
+RELOADBEAM
+```
+
+→ AutoCADを再起動せずに最新のDLLが反映されます。その後 `FRAMINGPLAN` を再実行してください。
+
+> **ヒント**: `BEAMINFO` コマンドで現在のローダー・本体DLLの情報を確認できます。
 
 ### 4. オブジェクト選択
 
