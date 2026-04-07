@@ -184,6 +184,26 @@
 
                     <Separator/>
 
+                    <!-- 通り芯 -->
+                    <TextBlock Text="通り芯" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                    <CheckBox x:Name="ShowGridLinesCheckBox"
+                              Content="通り芯を表示"
+                              Foreground="#E0E0E0"
+                              FontFamily="Meiryo UI, Yu Gothic UI, Segoe UI"
+                              FontSize="11"
+                              IsChecked="True"
+                              Checked="GridLineVisibility_Changed"
+                              Unchecked="GridLineVisibility_Changed"
+                              Margin="0,0,0,6"/>
+                    <Border Background="#1E1E2E" CornerRadius="4" Padding="9,7"
+                            MaxHeight="180">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel x:Name="GridLineListPanel"/>
+                        </ScrollViewer>
+                    </Border>
+
+                    <Separator/>
+
                     <!-- 選択部材情報 -->
                     <TextBlock Text="選択部材の情報"
                                FontWeight="SemiBold" Margin="0,0,0,6"/>
@@ -193,6 +213,13 @@
                                        Foreground="#666" FontSize="11" TextWrapping="Wrap"/>
                         </StackPanel>
                     </Border>
+
+                    <Button x:Name="CreateTributaryDrawingBtn"
+                            Content="負担面積図を作成"
+                            Click="CreateTributaryDrawing_Click"
+                            IsEnabled="False"
+                            HorizontalAlignment="Stretch"
+                            Margin="0,6,0,0"/>
 
                     <Separator/>
 
@@ -223,6 +250,11 @@
                                    StrokeThickness="1" StrokeDashArray="3,2"
                                    Margin="0,0,6,0" VerticalAlignment="Center"/>
                         <TextBlock Text="ボロノイ領域（柱タブ）" FontSize="10" Foreground="#AAA"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,2">
+                        <Rectangle Width="20" Height="1" Fill="#FF6688"
+                                   Margin="0,0,6,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="通り芯" FontSize="11" Foreground="#AAA"/>
                     </StackPanel>
 
                 </StackPanel>

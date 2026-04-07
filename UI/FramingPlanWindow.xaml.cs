@@ -4,6 +4,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using Autodesk.AutoCAD.Geometry;
+using BeamLayoutAnalyzer.Drawing;
 using BeamLayoutAnalyzer.Models;
 
 namespace BeamLayoutAnalyzer.UI;
@@ -11,9 +12,10 @@ namespace BeamLayoutAnalyzer.UI;
 public partial class FramingPlanWindow : Window
 {
     // ─── データ ─────────────────────────────────────────────
-    private readonly List<SlabModel>   _slabs;
-    private readonly List<ColumnModel> _columns;
-    private readonly List<BeamModel>   _beams;
+    private readonly List<SlabModel>      _slabs;
+    private readonly List<ColumnModel>    _columns;
+    private readonly List<BeamModel>      _beams;
+    private readonly List<GridLineModel>  _gridLines;
 
     // ─── 表示モード ──────────────────────────────────────────
     private enum DisplayMode { Seismic, Beams, Columns }
@@ -22,7 +24,7 @@ public partial class FramingPlanWindow : Window
     // ─── 座標変換 ────────────────────────────────────────────
     private double _scale;
     private double _originX, _originY, _canvasH;
-    private const double CanvasMargin = 44.0;
+    private const double CanvasMargin = 60.0;
 
     // ─── 選択状態 ────────────────────────────────────────────
     private BeamModel?   _selectedBeam;
@@ -51,21 +53,30 @@ public partial class FramingPlanWindow : Window
     private static readonly Brush ColHover      = Freeze(new SolidColorBrush(Color.FromRgb( 160, 220, 255)));
     private static readonly Brush ColSel        = Freeze(new SolidColorBrush(Color.FromRgb( 100, 255, 180)));
     private static readonly Brush GrayCol       = Freeze(new SolidColorBrush(Color.FromArgb(80,  120, 120, 120)));
+    private static readonly Brush GridLineStroke = Freeze(new SolidColorBrush(Color.FromRgb(255, 102, 136)));
+    private static readonly Brush GridLabelBg    = Freeze(new SolidColorBrush(Color.FromRgb(255, 102, 136)));
+    private static readonly Brush GridLabelFg    = Freeze(new SolidColorBrush(Color.FromRgb(255, 255, 255)));
 
     private static SolidColorBrush Freeze(SolidColorBrush b) { b.Freeze(); return b; }
 
     // ─── コンストラクタ ──────────────────────────────────────
     public FramingPlanWindow(
-        List<SlabModel>   slabs,
-        List<ColumnModel> columns,
-        List<BeamModel>   beams)
+        List<SlabModel>      slabs,
+        List<ColumnModel>    columns,
+        List<BeamModel>      beams,
+        List<GridLineModel>  gridLines)
     {
         InitializeComponent();
-        _slabs   = slabs;
-        _columns = columns;
-        _beams   = beams;
+        _slabs     = slabs;
+        _columns   = columns;
+        _beams     = beams;
+        _gridLines = gridLines;
 
-        Loaded      += (_, _) => Render();
+        Loaded += (_, _) =>
+        {
+            PopulateGridLineList();
+            Render();
+        };
         SizeChanged += (_, _) => Render();
     }
 
@@ -81,6 +92,7 @@ public partial class FramingPlanWindow : Window
         _selectedBeam   = null;
         _selectedColumn = null;
         ClearHighlight();
+        CreateTributaryDrawingBtn.IsEnabled = false;
         MemberInfoPanel.Children.Clear();
         MemberInfoPanel.Children.Add(new TextBlock
         {
@@ -100,10 +112,13 @@ public partial class FramingPlanWindow : Window
         _beamVis.Clear();
         _colVis.Clear();
 
-        // バウンディングボックス
+        // バウンディングボックス（通り芯の端点も含める）
         var allPts = _slabs.SelectMany(s => s.Vertices)
             .Concat(_columns.Select(c => c.Center))
             .Concat(_beams.SelectMany(b => new[] { b.StartPoint, b.EndPoint }))
+            .Concat(ShowGridLinesCheckBox.IsChecked == true
+                ? _gridLines.SelectMany(g => new[] { g.StartPoint, g.EndPoint })
+                : Enumerable.Empty<Autodesk.AutoCAD.Geometry.Point2d>())
             .ToList();
         if (allPts.Count == 0) return;
 
@@ -122,6 +137,10 @@ public partial class FramingPlanWindow : Window
 
         DrawingCanvas.Width  = cadW * _scale + 2 * CanvasMargin;
         DrawingCanvas.Height = _canvasH;
+
+        // 通り芯を描画（全モード共通・背面レイヤー）
+        if (ShowGridLinesCheckBox.IsChecked == true)
+            RenderGridLines();
 
         switch (_mode)
         {
@@ -148,7 +167,7 @@ public partial class FramingPlanWindow : Window
             double cx = s.Vertices.Average(v => v.X);
             double cy = s.Vertices.Average(v => v.Y);
             var cp = ToCanvas(cx, cy);
-            string txt = $"面積\n{s.Area:F5} m²\n地震力\n{s.Area * k:F5} kN";
+            string txt = $"{Trunc2(s.Area * k):F2} kN";
             AddLabel(cp.X, cp.Y, txt, Color.FromRgb(255, 220, 80), centerX: true);
         }
 
@@ -236,7 +255,7 @@ public partial class FramingPlanWindow : Window
             double angle = b.Angle;
             double ox = -Math.Sin(angle) * 14;
             double oy =  Math.Cos(angle) * 14;
-            string txt  = $"{b.TributaryArea:F5} m²\n{b.TributaryArea * k:F5} kN";
+            string txt  = $"{Trunc2(b.TributaryArea * k):F2} kN";
             var color   = b.Type == BeamType.大梁
                 ? Color.FromRgb(255, 230, 80)
                 : Color.FromRgb(255, 195, 100);
@@ -290,7 +309,7 @@ public partial class FramingPlanWindow : Window
         {
             var cp = ToCanvas(c.Center.X, c.Center.Y);
             double r = Math.Max(c.Radius * _scale, 5);
-            string txt = $"{c.TributaryArea:F5} m²\n{c.TributaryArea * colK:F5} kN";
+            string txt = $"{Trunc2(c.TributaryArea * colK):F2} kN";
             AddLabel(cp.X, cp.Y - r - 28, txt, Color.FromRgb(100, 210, 255), centerX: true);
         }
     }
@@ -437,6 +456,7 @@ public partial class FramingPlanWindow : Window
         }
 
         ShowBeamInfo(beam);
+        CreateTributaryDrawingBtn.IsEnabled = beam.TributaryPolygons.Count > 0;
         e.Handled = true;
     }
 
@@ -608,6 +628,177 @@ public partial class FramingPlanWindow : Window
         Render(); // ラベルの荷重値も含めて再描画
     }
 
+    private void CreateTributaryDrawing_Click(object sender, RoutedEventArgs e)
+    {
+        if (_selectedBeam == null || _selectedBeam.TributaryPolygons.Count == 0) return;
+        TributaryAreaDrawing.Draw(_selectedBeam, _slabs, _beams, _gridLines);
+    }
+
     private double GetConst(TextBox box)
         => double.TryParse(box.Text, out double v) && v > 0 ? v : 1.0;
+
+    /// <summary>小数点以下3桁目を切り捨て（2桁表示用）</summary>
+    private static double Trunc2(double v)
+        => Math.Truncate(v * 100.0) / 100.0;
+
+    // ═══════════ 通り芯 ═══════════════════════════════════════
+
+    /// <summary>通り芯を一点鎖線 + 片側ラベルで描画する</summary>
+    private void RenderGridLines()
+    {
+        foreach (var gl in _gridLines)
+        {
+            var sp = ToCanvas(gl.StartPoint.X, gl.StartPoint.Y);
+            var ep = ToCanvas(gl.EndPoint.X,   gl.EndPoint.Y);
+
+            // 一点鎖線（DashArray: 長-短-点-短）
+            var line = new Line
+            {
+                X1 = sp.X, Y1 = sp.Y,
+                X2 = ep.X, Y2 = ep.Y,
+                Stroke          = GridLineStroke,
+                StrokeThickness = 0.8,
+                StrokeDashArray = new System.Windows.Media.DoubleCollection { 10, 3, 2, 3 },
+                IsHitTestVisible = false,
+                Opacity = 0.7,
+            };
+            DrawingCanvas.Children.Add(line);
+
+            // 片側のみにラベルを表示
+            // X通り（垂直）→ 下側(sp: minY → Canvas底部)
+            // Y通り（水平）→ 左側(sp: minX → Canvas左端)
+            AddGridLabel(sp.X, sp.Y, gl.Name, gl.Direction);
+        }
+    }
+
+    /// <summary>通り芯の丸囲みラベルを描画する</summary>
+    private void AddGridLabel(double cx, double cy, string name, GridLineDirection dir)
+    {
+        double size = 24;
+        double gap  = 6; // ライン端からのギャップ
+
+        // ラベル位置: ラインの延長方向にオフセット
+        double offsetX = 0, offsetY = 0;
+        if (dir == GridLineDirection.Vertical)
+        {
+            // 垂直線 → 下方向にオフセット
+            offsetY = size / 2 + gap;
+        }
+        else
+        {
+            // 水平線 → 左方向にオフセット
+            offsetX = -(size / 2 + gap);
+        }
+
+        var ellipse = new Ellipse
+        {
+            Width  = size,
+            Height = size,
+            Fill   = GridLabelBg,
+            IsHitTestVisible = false,
+        };
+        Canvas.SetLeft(ellipse, cx + offsetX - size / 2);
+        Canvas.SetTop(ellipse,  cy + offsetY - size / 2);
+        DrawingCanvas.Children.Add(ellipse);
+
+        var tb = new TextBlock
+        {
+            Text          = name,
+            FontSize      = 9.5,
+            FontWeight    = FontWeights.Bold,
+            FontFamily    = new FontFamily("Meiryo UI, Yu Gothic UI, Segoe UI"),
+            Foreground    = GridLabelFg,
+            TextAlignment = TextAlignment.Center,
+            IsHitTestVisible = false,
+        };
+        tb.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        Canvas.SetLeft(tb, cx + offsetX - tb.DesiredSize.Width / 2);
+        Canvas.SetTop(tb,  cy + offsetY - tb.DesiredSize.Height / 2);
+        DrawingCanvas.Children.Add(tb);
+    }
+
+    /// <summary>通り芯の表示/非表示チェックボックス変更時</summary>
+    private void GridLineVisibility_Changed(object sender, RoutedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        Render();
+    }
+
+    /// <summary>右パネルに通り芯一覧（名前編集TextBox付き）を生成する</summary>
+    private void PopulateGridLineList()
+    {
+        GridLineListPanel.Children.Clear();
+
+        if (_gridLines.Count == 0)
+        {
+            GridLineListPanel.Children.Add(new TextBlock
+            {
+                Text = "通り芯なし（柱2本以上必要）",
+                Foreground = new SolidColorBrush(Color.FromRgb(100, 100, 100)),
+                FontSize = 11, TextWrapping = TextWrapping.Wrap,
+            });
+            return;
+        }
+
+        foreach (var gl in _gridLines)
+        {
+            var row = new Grid { Margin = new Thickness(0, 2, 0, 2) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            // 方向アイコン
+            var dirLabel = new TextBlock
+            {
+                Text = gl.Direction == GridLineDirection.Vertical ? "│" : "─",
+                Foreground = GridLineStroke,
+                FontSize   = 12,
+                FontWeight = FontWeights.Bold,
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(0, 0, 6, 0),
+            };
+            Grid.SetColumn(dirLabel, 0);
+            row.Children.Add(dirLabel);
+
+            // 名前編集TextBox
+            var nameBox = new TextBox
+            {
+                Text       = gl.Name,
+                FontSize   = 11,
+                MinWidth   = 40,
+                Tag        = gl,
+                Background = new SolidColorBrush(Color.FromRgb(50, 50, 60)),
+                Foreground = new SolidColorBrush(Color.FromRgb(230, 230, 230)),
+                BorderBrush     = new SolidColorBrush(Color.FromRgb(80, 80, 90)),
+                BorderThickness = new Thickness(1),
+                Padding    = new Thickness(4, 2, 4, 2),
+            };
+            nameBox.LostFocus += GridLineName_Changed;
+            nameBox.KeyDown   += (s, e) => { if (e.Key == Key.Enter) { GridLineName_Changed(s, e); e.Handled = true; } };
+            Grid.SetColumn(nameBox, 1);
+            row.Children.Add(nameBox);
+
+            // 柱数ラベル
+            var colCount = new TextBlock
+            {
+                Text = $" ({gl.Columns.Count}柱)",
+                Foreground = new SolidColorBrush(Color.FromRgb(120, 120, 130)),
+                FontSize   = 10,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+            Grid.SetColumn(colCount, 2);
+            row.Children.Add(colCount);
+
+            GridLineListPanel.Children.Add(row);
+        }
+    }
+
+    /// <summary>通り芯名が変更された時</summary>
+    private void GridLineName_Changed(object sender, EventArgs e)
+    {
+        if (sender is not TextBox box || box.Tag is not GridLineModel gl) return;
+        if (gl.Name == box.Text) return;
+        gl.Name = box.Text;
+        Render(); // ラベルを再描画
+    }
 }

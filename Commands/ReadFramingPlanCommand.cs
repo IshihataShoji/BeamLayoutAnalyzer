@@ -92,9 +92,20 @@ public class ReadFramingPlanCommand
                             $"ポリゴン数={b.TributaryPolygons.Count}\n");
         }
 
+        // 通り芯の自動検出
+        ed.WriteMessage("通り芯を検出中...\n");
+        var gridDetector = new GridLineDetector(slabs, columns);
+        var gridLines = gridDetector.Detect();
+        ed.WriteMessage($"通り芯検出完了: {gridLines.Count} 本\n");
+        foreach (var gl in gridLines)
+        {
+            ed.WriteMessage($"  {gl.Name}: {gl.Direction} " +
+                            $"座標={gl.Position:F3}m 柱数={gl.Columns.Count}\n");
+        }
+
         // GUI起動
-        var window = new FramingPlanWindow(slabs, columns, beams);
-        Application.ShowModalWindow(window);
+        var window = new FramingPlanWindow(slabs, columns, beams, gridLines);
+        Application.ShowModelessWindow(window);
     }
 
     /// <summary>
